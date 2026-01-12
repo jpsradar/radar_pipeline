@@ -35,13 +35,12 @@ This is a library module; it is called by DSP chains or by validation scripts.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple, Union, Literal
-import math
+from typing import Any, Dict, Literal
 
 import numpy as np
 
-from core.detection.thresholds import threshold_energy, threshold_scale_ca_cfar
-from core.detection.cfar import ca_cfar_detect, ca_cfar_detect_1d_sliding
+from core.detection.thresholds import threshold_energy
+from core.detection.cfar import ca_cfar_detect_1d_sliding
 
 
 class DetectorError(ValueError):

@@ -3,37 +3,91 @@ core/simulation/model_based.py
 
 Fast physical-statistical engine (model-based) for radar performance trade studies.
 
-What this module does (serious baseline)
-----------------------------------------
-- Computes a monostatic radar equation budget (received power vs range).
-- Computes receiver noise power using k*T*B and Noise Figure (NF).
-- Produces SNR in linear and dB (noise-limited baseline; SINR is an extension hook).
-- Computes detection performance (Pd) for a square-law energy detector using
-  chi-square / noncentral chi-square statistics (no approximations).
+Purpose
+-------
+Provide a deterministic, high-speed performance engine suitable for:
+- parameter sweeps / trade studies (run-time dominated by pure math, not simulation),
+- contract-driven validation against Monte Carlo experiments,
+- generating report-ready metrics that are traceable and reproducible.
 
-Scope (v1)
-----------
-- Primary use: performance and trade sweeps (fast).
-- Assumes a pulsed (or pulse-Doppler) style matched-filter output per range cell.
-- Supports:
-  - Noncoherent integration: sum of pulse energies (chi-square with 2N DOF).
-  - Coherent-like baseline: 2-DOF energy test with boosted SNR_total = N * SNR_per_pulse.
+What this module computes (v1 baseline)
+---------------------------------------
+1) Power budget (monostatic radar equation)
+   - Received power vs range:
+       Pr(R) = Pt * Gt * Gr * (lambda^2 * sigma) / ( (4*pi)^3 * R^4 * L )
 
-Contract for model-vs-experiment comparisons
---------------------------------------------
-When detection.pfa is provided, this engine MUST emit a fully specified detector contract
-inside metrics["detection"], including:
-- the test statistic definition
-- the assumed H0/H1 distributions and parameters
-- the threshold used
-- the resulting Pd curve
+2) Receiver noise power (thermal)
+   - Noise power:
+       N = k * T * B * F
+     where:
+       k : Boltzmann constant
+       T : receiver noise temperature [K]
+       B : receiver bandwidth [Hz]
+       F : noise factor (linear), from NF [dB]
 
-This is required so a Monte Carlo experiment can replicate the exact same detector.
+3) SNR and SINR (noise-limited + optional interference)
+   - SNR(R)  = Pr(R) / N
+   - SINR(R) = Pr(R) / (N + I)
+     where I is an optional additive interference power at receiver input.
+
+4) Detection performance for an energy detector (square-law), using exact statistics
+   - Noncoherent integration of N pulses:
+       T = sum_{i=1..N} |z_i|^2
+       Under H0: T ~ chi2(df=2N)
+       Under H1: T ~ ncx2(df=2N, nc = 2*N*SNR_per_pulse)
+   - Coherent-like baseline (intentional simplification for fast sweeps):
+       df = 2 energy detector with boosted SNR_total = N * SNR_per_pulse
+
+Detector Contract (for model-vs-experiment comparisons)
+-------------------------------------------------------
+When detection.pfa is provided, this engine MUST emit an explicit detector contract under:
+    metrics["detection"]["contract"]
+
+The contract is a publishable, replication-ready specification:
+- test statistic definition and normalization
+- H0 / H1 distribution family and parameters (df, noncentrality expression)
+- threshold used
+- integration mode and pulse count
+- the resulting Pd array
+
+This explicit contract is required so external experiments (Monte Carlo / lab / notebook)
+can replicate the exact same detector and compare apples-to-apples.
+
+Validity Contract (repo-wide)
+-----------------------------
+All runnable engines must emit a top-level:
+    metrics["validity"]
+
+This is a compact declaration of:
+- statistical model assumptions,
+- clutter/interference assumptions,
+- known modeling limits.
+
+The intent is traceability and professional honesty, not "marketing".
+
+Interference model (v1)
+-----------------------
+Optional config block:
+
+    interference:
+      model: noise_like_jammer
+      jnr_db: <number>
+
+Interpretation:
+- "noise-like jammer" modeled as additive white interference at receiver input.
+- JNR defined at receiver input as:
+      JNR = I / N
+  so:
+      I = N * JNR_linear
+- v1: constant vs range (input-referred).
+
+Important:
+- This is not waveform-level jamming. It is a power-domain impairment hook.
 
 Dependencies
 ------------
 - NumPy
-- SciPy (chi-square and noncentral chi-square)
+- SciPy (chi2 and ncx2 survival functions)
 """
 
 from __future__ import annotations
@@ -41,6 +95,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 import math
+import inspect
 
 import numpy as np
 
@@ -57,10 +112,11 @@ from core.config.units import (
     k_boltzmann,
 )
 
-# Geometry + FAR (system-level counts)
 from core.geometry.dwell import make_cpi, make_dwell, cpis_per_second
 from core.geometry.counts import make_rd_grid, make_scan_geometry
 from core.detection.far_conversion import FARInputs, convert_pfa_to_far
+
+from core.contracts.validity import validity_for_model_based
 
 
 # ----------------------------
@@ -69,12 +125,44 @@ from core.detection.far_conversion import FARInputs, convert_pfa_to_far
 
 @dataclass(frozen=True)
 class BudgetTerms:
-    """Holds intermediate budget terms for traceability."""
+    """
+    Holds intermediate deterministic terms for traceability.
+
+    Notes
+    -----
+    - Keeping these terms explicit makes reports audit-friendly.
+    - These terms are purely deterministic functions of config.
+    """
     wavelength_m: float
     gt_lin: float
     gr_lin: float
     losses_lin: float
     noise_power_w: float
+
+
+# ----------------------------
+# Small internal helper
+# ----------------------------
+
+def _call_with_supported_kwargs(fn: Any, **kwargs: Any) -> Any:
+    """
+    Call a function using only the kwargs that it actually accepts.
+
+    Why this exists
+    ---------------
+    `validity_for_model_based(...)` is a contract helper that may evolve.
+    We want the engine to stay robust across minor signature changes, while still
+    passing meaningful context whenever possible.
+
+    Behavior
+    --------
+    - Filters kwargs by the function signature.
+    - Calls fn(**filtered_kwargs).
+    - Lets exceptions propagate (a broken validity contract should fail loudly).
+    """
+    sig = inspect.signature(fn)
+    filtered = {k: v for k, v in kwargs.items() if k in sig.parameters}
+    return fn(**filtered)
 
 
 # ----------------------------
@@ -90,17 +178,16 @@ def run_model_based_case(cfg: Dict[str, Any], seed: Optional[int] = None) -> Dic
     cfg : dict
         Validated and normalized case configuration.
     seed : int | None
-        Reserved for future stochastic features. Not used yet.
+        Reserved for future stochastic features. Not used in v1 (engine is deterministic).
 
     Returns
     -------
     dict
-        Metrics dictionary to be written to metrics.json.
+        Metrics dictionary suitable to be written as metrics.json.
     """
-    # NOTE: Engine is deterministic. Seed is stored by CLI for provenance.
-    _ = seed
+    _ = seed  # deterministic v1
 
-    # --- Extract and validate minimal required parameters ---
+    # --- Required sections ---
     radar = _require_section(cfg, "radar")
     antenna = _require_section(cfg, "antenna")
     receiver = _require_section(cfg, "receiver")
@@ -109,7 +196,7 @@ def run_model_based_case(cfg: Dict[str, Any], seed: Optional[int] = None) -> Dic
     fc_hz = _require_pos_float(radar, "fc_hz")
     tx_power_w = _require_pos_float(radar, "tx_power_w")
 
-    # PRF is used for explicit CPI timing and FAR conversion.
+    # PRF is used for CPI timing + FAR conversion.
     prf_hz = _require_pos_float(radar, "prf_hz", default=1_000.0)
 
     gain_tx_db = _require_float(antenna, "gain_tx_db", default=0.0)
@@ -124,7 +211,7 @@ def run_model_based_case(cfg: Dict[str, Any], seed: Optional[int] = None) -> Dic
     env = cfg.get("environment", {}) if isinstance(cfg.get("environment", {}), dict) else {}
     system_losses_db = _require_nonneg_float(env, "system_losses_db", default=0.0)
 
-    # Ranges: metrics.ranges_m (vector) preferred; else scenario.range_m; else default.
+    # Ranges: metrics.ranges_m preferred.
     ranges_m = _get_ranges_m(cfg)
 
     # Detection settings (optional)
@@ -139,7 +226,7 @@ def run_model_based_case(cfg: Dict[str, Any], seed: Optional[int] = None) -> Dic
         raise ValueError("detection.integration must be 'noncoherent' or 'coherent'")
 
     # -----------------------------------------------------------------
-    # Geometry + counts (explicit, to enable system-level FAR)
+    # Geometry + counts (explicit counts enable system-level FAR metrics)
     # -----------------------------------------------------------------
     geometry = cfg.get("geometry", {}) if isinstance(cfg.get("geometry", {}), dict) else {}
 
@@ -155,7 +242,9 @@ def run_model_based_case(cfg: Dict[str, Any], seed: Optional[int] = None) -> Dic
     rd_grid = make_rd_grid(n_range_bins=n_range_bins, n_doppler_bins=n_doppler_bins)
     scan_geom = make_scan_geometry(beams_per_scan=beams_per_scan, dwell_time_s=dwell.dwell_time_s)
 
-    # --- Compute budget and SNR vs range ---
+    # -------------------------
+    # Deterministic budget math
+    # -------------------------
     terms = _compute_budget_terms(
         fc_hz=fc_hz,
         gain_tx_db=gain_tx_db,
@@ -176,11 +265,42 @@ def run_model_based_case(cfg: Dict[str, Any], seed: Optional[int] = None) -> Dic
         losses_lin=terms.losses_lin,
     )
 
-    # Noise-limited baseline (SINR extension would modify denominator)
+    # Baseline SNR (noise-only denominator)
     snr_lin = pr_w / terms.noise_power_w
     snr_db = lin_to_db_power(np.maximum(snr_lin, np.finfo(float).tiny))
 
-    # --- Detection performance (optional) ---
+    # -------------------------
+    # Optional interference hook
+    # -------------------------
+    interference = cfg.get("interference", None) if isinstance(cfg.get("interference", None), dict) else None
+
+    i_power_w = 0.0
+    interference_model = None
+    jnr_db = None
+
+    if interference is not None:
+        interference_model = str(interference.get("model", "")).strip()
+        if interference_model == "noise_like_jammer":
+            jnr_db = _require_float(interference, "jnr_db")
+            jnr_lin = db_to_lin_power(float(jnr_db))
+            if not (math.isfinite(jnr_lin) and jnr_lin >= 0.0):
+                raise ValueError(f"interference.jnr_db produced invalid linear JNR: {jnr_lin}")
+            # Input-referred additive interference power:
+            i_power_w = float(terms.noise_power_w * jnr_lin)
+        else:
+            raise ValueError(f"Unsupported interference.model: {interference_model!r}")
+
+    # Always emit SINR arrays:
+    denom_w = float(terms.noise_power_w + i_power_w)
+    sinr_lin = pr_w / denom_w
+    sinr_db = lin_to_db_power(np.maximum(sinr_lin, np.finfo(float).tiny))
+
+    # Effective SNR used by the detector:
+    eff_snr_lin = sinr_lin if i_power_w > 0.0 else snr_lin
+
+    # -------------------------------------------------------------
+    # Detection performance (optional): uses effective SNR definition
+    # -------------------------------------------------------------
     pd = None
     threshold = None
     far = None
@@ -191,15 +311,11 @@ def run_model_based_case(cfg: Dict[str, Any], seed: Optional[int] = None) -> Dic
         if not (0.0 < pfa_f < 1.0):
             raise ValueError(f"detection.pfa must be in (0, 1), got {pfa_f}")
 
-        # Detector contract (explicit, for model-vs-experiment comparisons)
-        # Statistic is always in the POWER/ENERGY domain:
-        #   T = sum_{i=1..N} |z_i|^2    (noncoherent)
-        # or coherent-like baseline:
-        #   T = |z|^2 with boosted SNR_total = N * SNR_per_pulse (df=2)
         detection_contract = {
             "pfa_target": pfa_f,
             "integration": integration,
             "n_pulses": int(n_pulses),
+            "snr_definition": "SINR_per_pulse if interference present else SNR_per_pulse",
             "statistic": {
                 "name": "energy_sum",
                 "definition": "T = sum_{i=1..N} |z_i|^2 (power/energy domain)",
@@ -210,32 +326,26 @@ def run_model_based_case(cfg: Dict[str, Any], seed: Optional[int] = None) -> Dic
         }
 
         if integration == "noncoherent":
-            # Under H0 => chi-square with 2N DOF
-            # Under H1 => noncentral chi-square with 2N DOF, nc = 2*N*SNR_per_pulse
             threshold = _threshold_noncoherent(pfa=pfa_f, n_pulses=n_pulses)
-            pd = _pd_noncoherent(threshold=threshold, snr_lin=snr_lin, n_pulses=n_pulses)
-
+            pd = _pd_noncoherent(threshold=threshold, snr_lin=eff_snr_lin, n_pulses=n_pulses)
             detection_contract["h0"] = {"family": "chi2", "df": int(2 * n_pulses)}
             detection_contract["h1"] = {
                 "family": "ncx2",
                 "df": int(2 * n_pulses),
-                "noncentrality": "nc = 2*N*SNR_per_pulse",
+                "noncentrality": "nc = 2*N*SNR_per_pulse (SNR interpreted per snr_definition)",
             }
         else:
-            # Coherent-like baseline: df=2 energy detector with boosted SNR_total=N*SNR
             threshold = _threshold_coherent(pfa=pfa_f)
-            pd = _pd_coherent(threshold=threshold, snr_lin=snr_lin, n_pulses=n_pulses)
-
+            pd = _pd_coherent(threshold=threshold, snr_lin=eff_snr_lin, n_pulses=n_pulses)
             detection_contract["h0"] = {"family": "chi2", "df": 2}
             detection_contract["h1"] = {
                 "family": "ncx2",
                 "df": 2,
-                "noncentrality": "nc = 2*SNR_total, with SNR_total = N*SNR_per_pulse",
+                "noncentrality": "nc = 2*SNR_total, SNR_total = N*SNR_per_pulse (per snr_definition)",
             }
 
         detection_contract["threshold"] = float(threshold)
 
-        # System-level FAR conversion (explicit counts)
         far_inputs = FARInputs(
             pfa=pfa_f,
             domain="rd_cell",
@@ -246,7 +356,9 @@ def run_model_based_case(cfg: Dict[str, Any], seed: Optional[int] = None) -> Dic
         )
         far = convert_pfa_to_far(far_inputs)
 
-    # --- Package metrics with traceability ---
+    # -------------------------
+    # Metrics packaging
+    # -------------------------
     metrics: Dict[str, Any] = {
         "engine": "model_based",
         "inputs_summary": {
@@ -263,6 +375,8 @@ def run_model_based_case(cfg: Dict[str, Any], seed: Optional[int] = None) -> Dic
             "n_pulses": n_pulses,
             "integration": integration,
             "pfa": float(pfa) if pfa is not None else None,
+            "interference_model": interference_model,
+            "jnr_db": float(jnr_db) if jnr_db is not None else None,
         },
         "ranges_m": ranges_m.tolist(),
         "budget": {
@@ -272,11 +386,16 @@ def run_model_based_case(cfg: Dict[str, Any], seed: Optional[int] = None) -> Dic
             "losses_lin": terms.losses_lin,
             "noise_power_w": terms.noise_power_w,
             "noise_power_dbw": lin_to_db_power(terms.noise_power_w),
+            "interference_power_w": float(i_power_w),
+            "interference_power_dbw": lin_to_db_power(max(float(i_power_w), np.finfo(float).tiny)),
+            "noise_plus_interference_w": float(terms.noise_power_w + i_power_w),
         },
         "received_power_w": pr_w.tolist(),
         "received_power_dbw": lin_to_db_power(np.maximum(pr_w, np.finfo(float).tiny)).tolist(),
         "snr_lin": snr_lin.tolist(),
         "snr_db": snr_db.tolist(),
+        "sinr_lin": sinr_lin.tolist(),
+        "sinr_db": sinr_db.tolist(),
         "geometry": {
             "n_range_bins": rd_grid.n_range_bins,
             "n_doppler_bins": rd_grid.n_doppler_bins,
@@ -292,7 +411,6 @@ def run_model_based_case(cfg: Dict[str, Any], seed: Optional[int] = None) -> Dic
     }
 
     if pd is not None and threshold is not None and detection_contract is not None:
-        # NOTE: Keep a flat Pd array for plotting, but also ship the full detector contract.
         metrics["detection"] = {
             "threshold": float(threshold),
             "pd": pd.tolist(),
@@ -308,6 +426,22 @@ def run_model_based_case(cfg: Dict[str, Any], seed: Optional[int] = None) -> Dic
             "per_scan": far.far_per_scan,
             "breakdown": far.breakdown,
         }
+
+    # -------------------------
+    # Validity contract (top-level)
+    # -------------------------
+    # We pass a rich context dictionary; the helper will accept what it wants.
+    metrics["validity"] = _call_with_supported_kwargs(
+        validity_for_model_based,
+        cfg=cfg,
+        engine="model_based",
+        integration=integration,
+        n_pulses=int(n_pulses),
+        has_interference=bool(i_power_w > 0.0),
+        interference_model=interference_model,
+        jnr_db=float(jnr_db) if jnr_db is not None else None,
+        snr_kind=("sinr" if i_power_w > 0.0 else "snr"),
+    )
 
     return metrics
 
@@ -371,7 +505,7 @@ def _received_power_w(
 
 
 # ----------------------------
-# Detection math (serious stats)
+# Detection math (exact stats)
 # ----------------------------
 
 def _threshold_noncoherent(*, pfa: float, n_pulses: int) -> float:

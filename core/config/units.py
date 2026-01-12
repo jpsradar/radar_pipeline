@@ -37,7 +37,7 @@ Monte Carlo cases:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Union, overload
+from typing import Any, Dict, List, Union
 import math
 import copy
 

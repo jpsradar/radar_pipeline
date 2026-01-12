@@ -59,7 +59,6 @@ Design notes
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 import math
 
 from core.environment.propagation import db_to_lin

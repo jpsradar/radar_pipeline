@@ -36,7 +36,6 @@ Every time-related quantity must be derivable from:
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 
 
 class GeometryError(ValueError):

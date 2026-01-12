@@ -30,7 +30,6 @@ From project root:
 from __future__ import annotations
 
 from typing import Any, Dict, List
-import numpy as np
 
 from core.simulation.model_based import run_model_based_case
 

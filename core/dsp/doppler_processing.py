@@ -50,7 +50,7 @@ This module is not a CLI. Validate via:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Optional
 import numpy as np
 
 from core.dsp.windowing import apply_window, WindowType

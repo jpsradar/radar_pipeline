@@ -52,7 +52,6 @@ Example:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple, Union, List
 import math
 
@@ -443,26 +442,38 @@ def _ci_wilson(*, p: float, n: int, z: float) -> Tuple[float, float]:
 
 def _decorate_metrics(metrics: Dict[str, Any], *, cfg: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Attach traceability fields so notebooks/reports can show "what was run".
-
-    Important
-    ---------
-    This function is intentionally a shallow decorator:
-    - It does not rewrite the core metrics
-    - It only adds background/hetero metadata for reporting
+    Attach traceability + validity fields so reports can show:
+    - what was run (background, detector)
+    - under what modeling assumptions/limits (validity contract)
     """
     mc = cfg.get("monte_carlo", {})
     bg = mc.get("background", {}) if isinstance(mc, dict) else {}
 
+    # Detector name must be forwarded explicitly because validity_for_monte_carlo
+    # requires it as a keyword-only argument.
+    detector = None
+    if isinstance(metrics, dict):
+        detector = metrics.get("detector", None)
+    if detector is None and isinstance(mc, dict):
+        detector = mc.get("detector", None)
+    detector = str(detector) if detector is not None else "unknown"
+
+    from core.contracts.validity import validity_for_monte_carlo  # type: ignore
+
     metrics_out = dict(metrics)
+
     metrics_out["background"] = {
         "model": bg.get("model", "exponential"),
         "mean_power": bg.get("mean_power", None),
         "params": bg.get("params", {}),
         "hetero": bg.get("hetero", None),
     }
-    return metrics_out
 
+    # New: validity contract (required across engines)
+    metrics_out["validity"] = validity_for_monte_carlo(cfg, detector=detector)
+
+    return metrics_out
+        
 
 # ---------------------------------------------------------------------
 # Config parsing helpers

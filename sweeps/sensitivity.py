@@ -82,12 +82,10 @@ Notes
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Sequence, Tuple
 import copy
 import math
 
-import numpy as np
 
 
 MetricFn = Callable[[Dict[str, Any]], Dict[str, Any]]

@@ -55,7 +55,7 @@ This module is not a CLI. Validate via test suite:
 
 from __future__ import annotations
 
-from typing import Literal, Tuple
+from typing import Literal
 import math
 
 import numpy as np

@@ -78,7 +78,7 @@ import argparse
 import datetime as _dt
 import json
 import math
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
 from core.simulation.monte_carlo import run_pfa_monte_carlo
 

@@ -22,7 +22,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Iterable, Optional, Sequence
-import math
 
 import numpy as np
 import matplotlib.pyplot as plt

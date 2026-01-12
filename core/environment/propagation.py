@@ -64,7 +64,6 @@ Design notes
 from __future__ import annotations
 
 import math
-from typing import Optional
 
 
 SPEED_OF_LIGHT_M_S: float = 299_792_458.0

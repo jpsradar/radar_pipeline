@@ -53,10 +53,10 @@ Design notes
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, List, Optional
+from typing import Iterable
 import math
 
-from core.environment.propagation import fspl_db, db_to_lin, lin_to_db
+from core.environment.propagation import fspl_db, db_to_lin
 
 
 @dataclass(frozen=True)

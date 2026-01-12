@@ -48,7 +48,6 @@ def test_ca_cfar_empirical_pfa_matches_target() -> None:
     """
     rng = np.random.default_rng(12345)
 
-    pfa_target = 1e-6
     n_ref = 32  # reference cells
     mu = 1.0    # mean of exponential distribution (scale parameter)
 

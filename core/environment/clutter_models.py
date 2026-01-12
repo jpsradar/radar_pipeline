@@ -53,14 +53,14 @@ Notes on conventions
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Protocol, Tuple, Union
+from typing import Protocol, Tuple, Union
 import math
 
 import numpy as np
 
 try:
     from scipy import special  # type: ignore
-    from scipy.stats import gamma, lognorm, weibull_min  # type: ignore
+    from scipy.stats import lognorm, weibull_min  # type: ignore
 except Exception as exc:  # pragma: no cover
     raise ImportError(
         "SciPy is required for clutter models (gamma/lognorm/weibull/special). "

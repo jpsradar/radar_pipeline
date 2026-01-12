@@ -1,73 +1,83 @@
 """
 validation/sanity_checks.py
 
-Validation harness for the radar pipeline (professional, reproducible sanity checks).
+Golden validation harness for the radar_pipeline.
 
-What this module does
----------------------
-Provides a small set of deterministic, automation-friendly checks to prevent
-silent regressions in core radar performance math.
+Why this exists
+--------------
+This repository has three kinds of logic that can silently drift apart over time:
 
-This is NOT a full test suite replacement.
-This is the "golden sanity harness" that must pass before you trust any sweep/report.
+1) Contracts (schemas + loader + CLI strict mode)
+   - Ensures "what we think we ran" is exactly what we ran.
+   - Prevents schema/$ref/resolver breakages and config/engine mismatches.
 
-Checks included (v1)
---------------------
-1) Radar equation scaling sanity:
-   - Received power must scale ~ 1/R^4 for monostatic radar equation.
-   - We validate the ratio Pr(R1)/Pr(R2) against (R2/R1)^4.
+2) Deterministic physics/statistics (model_based)
+   - Radar equation and receiver noise power must remain physically consistent.
+   - Detection math (chi2 / ncx2) must remain correctly wired to thresholds and SNR/SINR.
 
-2) Pd monotonicity sanity:
-   - For fixed Pfa and integration settings, Pd must be non-decreasing with SNR.
-   - This catches broken threshold/statistics wiring.
+3) Empirical behavior (monte_carlo + signal_level)
+   - CFAR and RD-map generation must execute reproducibly and remain numerically sane.
+   - “Golden” Monte Carlo properties guard against regressions that unit tests miss.
 
-3) CA-CFAR homogeneous Pfa Monte Carlo (golden property):
-   - Under homogeneous exponential background, CA-CFAR (independent mode) should
-     maintain the requested Pfa (within statistical tolerance).
-   - We verify that:
-       - empirical Pfa is close to target (absolute tolerance)
-       - target lies within Wilson 95% confidence interval
+What this harness guarantees (v1)
+---------------------------------
+If `python -m validation.sanity_checks` passes, then:
 
-4) Two Monte Carlo "spot" runs:
-   - Homogeneous baseline (fast)
-   - Heterogeneous segments (fast) to expose non-homogeneity sensitivity
-     (we do NOT require it to match Pfa; we just record behavior)
+A) End-to-end contract gates pass
+   - cli.run_case runs canonical cases under --strict
+   - produced metrics.json includes required contracts:
+       * validity (all engines)
+       * detection.contract (model_based with detection enabled)
+       * sinr_db emission and degradation for jammer demo case
 
-5) Signal-level engine smoke + invariants (v1):
-   - Ensures the signal_level engine runs deterministically and produces a sane RD map summary.
-   - Validates core invariants:
-       * correct grid dimensions
-       * finite, positive noise power model
-       * finite RD stats (mean/median/max)
-       * injected target bin power is finite
-       * optional CFAR outputs are finite and structurally consistent
+B) Physics/statistics invariants hold
+   - Monostatic radar equation scales ~ 1/R^4
+   - Pd is monotonic with increasing SNR/SINR (for fixed Pfa and integration settings)
+
+C) Monte Carlo golden behavior remains correct
+   - CA-CFAR independent mode under homogeneous exponential noise maintains target Pfa
+     within statistically justified tolerance (Wilson 95% CI + 5-sigma bound)
+
+D) Signal-level engine remains usable
+   - RD grid shape is correct
+   - noise model and RD statistics are finite and sane
+   - optional detection outputs are structurally consistent
+
+Non-goals (intentional)
+-----------------------
+- This is not a full unit test suite replacement.
+- This is not a benchmarking tool.
+- This does not attempt to validate high-fidelity waveform models.
 
 How to run
 ----------
 Fast (default):
     python -m validation.sanity_checks
 
-Full (larger MC):
+Full (slower MC sizes):
     python -m validation.sanity_checks --full
 
 Exit codes
 ----------
 0 : all checks passed
-2 : at least one check failed
-3 : unexpected error / exception
+2 : at least one check failed (assertion-style failure)
+3 : unexpected exception / error
 """
 
 from __future__ import annotations
 
 import argparse
-from typing import Any, Dict, List
+import json
 import math
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any, Dict, List
 
 import numpy as np
 
 from core.simulation.model_based import run_model_based_case
 from core.simulation.monte_carlo import run_pfa_monte_carlo
-from core.simulation.signal_level import run_signal_level_case
 
 
 # ---------------------------------------------------------------------
@@ -125,15 +135,20 @@ def run_all_checks(*, full: bool, seed: int) -> None:
     """
     Run the full sanity harness.
 
-    Parameters
-    ----------
-    full : bool
-        If True, run larger Monte Carlo trial counts.
-    seed : int
-        Base seed for reproducibility.
+    Gates are ordered:
+    0) End-to-end contract checks (schema + strict + metrics contracts)
+    1) Core math invariants (radar equation scaling)
+    2) Pd monotonicity (model-based)
+    3) MC golden property (CA-CFAR homogeneous)
+    4) MC hetero spot (executes path, record-only)
+    5) Signal-level smoke (optional but recommended)
     """
     print(f"[INFO] Running sanity checks (full={full}, seed={seed})")
 
+    # 0) End-to-end CLI contract checks (this is what keeps phase-1 honest)
+    _check_end_to_end_case_contracts(seed=seed)
+
+    # 1) In-memory math checks
     _check_radar_equation_scaling()
     _check_pd_monotonicity()
 
@@ -144,8 +159,114 @@ def run_all_checks(*, full: bool, seed: int) -> None:
     _check_cfar_homogeneous_pfa(seed=seed, n_trials=n_trials_homo)
     _spot_cfar_heterogeneous(seed=seed + 1, n_trials=n_trials_hetero)
 
-    # Signal-level smoke/invariants (keep it fast even in full mode)
+    # 5) Signal-level smoke/invariants
     _check_signal_level_smoke(seed=seed + 2)
+
+
+# ---------------------------------------------------------------------
+# 0) End-to-end contract checks (CLI + schema + strict)
+# ---------------------------------------------------------------------
+
+def _run_cli_case(*, case_path: str, seed: int) -> None:
+    """
+    Run cli.run_case in strict mode. Raises SanityCheckError on failure.
+    """
+    cmd = [
+        sys.executable,
+        "-m",
+        "cli.run_case",
+        "--case",
+        case_path,
+        "--engine",
+        "auto",
+        "--seed",
+        str(int(seed)),
+        "--overwrite",
+        "--strict",
+    ]
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if proc.returncode != 0:
+        raise SanityCheckError(
+            "cli.run_case failed.\n"
+            f"case={case_path}\n"
+            f"exit_code={proc.returncode}\n"
+            "----- output -----\n"
+            f"{proc.stdout}"
+        )
+
+
+def _find_run_dir(prefix: str) -> Path:
+    """
+    Find the first run dir under results/cases matching prefix, sorted by name for determinism.
+    """
+    root = Path("results/cases")
+    if not root.exists():
+        raise SanityCheckError("results/cases does not exist (cli.run_case did not produce outputs)")
+    hits = sorted([x for x in root.iterdir() if x.is_dir() and x.name.startswith(prefix)], key=lambda x: x.name)
+    if not hits:
+        raise SanityCheckError(f"Missing run dir for prefix: {prefix}")
+    return hits[0]
+
+
+def _load_metrics(run_dir: Path) -> Dict[str, Any]:
+    p = run_dir / "metrics.json"
+    if not p.exists():
+        raise SanityCheckError(f"Missing metrics.json: {p}")
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+def _check_end_to_end_case_contracts(*, seed: int) -> None:
+    """
+    End-to-end contract enforcement (Phase 1 gates).
+
+    This ensures:
+    - schema resolution works
+    - strict validation works
+    - engine runs
+    - metrics include required contracts (validity + detection contract where applicable)
+    """
+    # Clean results to avoid picking old runs
+    if Path("results").exists():
+        # safe, deterministic
+        subprocess.run(["rm", "-rf", "results"], check=False)
+
+    # Run the canonical cases
+    _run_cli_case(case_path="configs/cases/demo_pd_noise.yaml", seed=seed)
+    _run_cli_case(case_path="configs/cases/demo_clutter_cfar.yaml", seed=seed)
+    _run_cli_case(case_path="configs/cases/demo_jamming_sinr.yaml", seed=seed)
+
+    # 0a) demo_pd_noise: validity + detection.contract
+    run0 = _find_run_dir(f"demo_pd_noise__model_based__seed{seed}__cfg")
+    m0 = _load_metrics(run0)
+    if "validity" not in m0:
+        raise SanityCheckError(f"{run0.name}: metrics.json missing top-level validity")
+    det0 = m0.get("detection", None)
+    if not isinstance(det0, dict) or "contract" not in det0:
+        raise SanityCheckError(f"{run0.name}: metrics.json missing detection.contract (required for model-vs-mc)")
+    if not isinstance(det0["contract"], dict):
+        raise SanityCheckError(f"{run0.name}: detection.contract must be a dict")
+
+    # 0b) demo_clutter_cfar: validity must exist (monte carlo engine)
+    run1 = _find_run_dir(f"demo_clutter_cfar__monte_carlo__seed{seed}__cfg")
+    m1 = _load_metrics(run1)
+    if "validity" not in m1:
+        raise SanityCheckError(f"{run1.name}: metrics.json missing top-level validity")
+    if "detector" not in m1:
+        raise SanityCheckError(f"{run1.name}: metrics.json missing detector field")
+
+    # 0c) demo_jamming_sinr: sinr_db exists and shows degradation vs snr_db
+    run2 = _find_run_dir(f"demo_jamming_sinr__model_based__seed{seed}__cfg")
+    m2 = _load_metrics(run2)
+    if "snr_db" not in m2 or "sinr_db" not in m2:
+        raise SanityCheckError(f"{run2.name}: expected both snr_db and sinr_db in metrics.json")
+    snr0 = float(m2["snr_db"][0])
+    sinr0 = float(m2["sinr_db"][0])
+    if not (sinr0 < snr0):
+        raise SanityCheckError(
+            f"{run2.name}: expected SINR < SNR when jammer active. snr_db[0]={snr0}, sinr_db[0]={sinr0}"
+        )
+
+    print("[PASS] End-to-end strict case contracts (pd_noise + clutter_cfar + jamming_sinr)")
 
 
 # ---------------------------------------------------------------------
@@ -174,7 +295,6 @@ def _check_radar_equation_scaling() -> None:
     ratio_emp = pr1 / pr2
     ratio_theory = (20_000.0 / 10_000.0) ** 4  # (R2/R1)^4
 
-    # Allow small floating error; this should be extremely tight.
     rel_err = abs(ratio_emp - ratio_theory) / ratio_theory
     if rel_err > 1e-10:
         raise SanityCheckError(
@@ -211,8 +331,6 @@ def _check_pd_monotonicity() -> None:
     if np.any(~np.isfinite(pd_arr)):
         raise SanityCheckError("Pd contains non-finite values")
 
-    # Range decreases in our list => SNR increases => Pd should be non-decreasing.
-    # Allow tiny numerical noise (strict but safe).
     if np.any(np.diff(pd_arr) < -1e-12):
         raise SanityCheckError(f"Pd is not monotonic non-decreasing with SNR: Pd={pd_arr.tolist()}")
 
@@ -228,11 +346,9 @@ def _check_cfar_homogeneous_pfa(*, seed: int, n_trials: int) -> None:
     Golden check:
     CA-CFAR independent mode under homogeneous exponential background should meet target Pfa.
 
-    Acceptance criteria (professional & statistically grounded)
-    ----------------------------------------------------------
-    - Wilson 95% CI must contain the target Pfa
-    - |pfa_emp - pfa_target| must be within an absolute tolerance based on binomial stdev
-      (we use 5-sigma as a conservative bound for CI mismatch)
+    Acceptance:
+    - Wilson 95% CI contains the target
+    - |p_emp - p_target| within 5-sigma binomial tolerance
     """
     pfa_target = 1e-3
     n_ref = 32
@@ -271,16 +387,15 @@ def _check_cfar_homogeneous_pfa(*, seed: int, n_trials: int) -> None:
 
     if not (low <= pfa_target <= high):
         raise SanityCheckError(
-            f"CA-CFAR homogeneous Pfa check failed: target {pfa_target} not in Wilson95 [{low:.6g}, {high:.6g}] "
+            f"CA-CFAR homogeneous Pfa failed: target {pfa_target} not in Wilson95 [{low:.6g}, {high:.6g}] "
             f"(empirical={p_emp:.6g}, n_trials={n_trials})"
         )
 
-    # Additional absolute tolerance gate: 5-sigma binomial stdev around target
     sigma = math.sqrt(pfa_target * (1.0 - pfa_target) / n_trials)
     tol = 5.0 * sigma
     if abs(p_emp - pfa_target) > tol:
         raise SanityCheckError(
-            f"CA-CFAR homogeneous Pfa too far from target: emp={p_emp:.6g}, target={pfa_target:.6g}, tol={tol:.3e}"
+            f"CA-CFAR homogeneous Pfa too far: emp={p_emp:.6g}, target={pfa_target:.6g}, tol={tol:.3e}"
         )
 
     print(f"[PASS] CA-CFAR homogeneous Pfa (n_trials={n_trials}, emp={p_emp:.6g})")
@@ -291,14 +406,6 @@ def _check_cfar_homogeneous_pfa(*, seed: int, n_trials: int) -> None:
 # ---------------------------------------------------------------------
 
 def _make_segments_for_trials(n_trials: int) -> List[Dict[str, Any]]:
-    """
-    Build a deterministic piecewise-constant multiplier pattern whose counts sum to n_trials.
-
-    Design intent
-    -------------
-    - Keep the same "shape" as the demo: 0.7 / 1.0 / 1.8 with 25% / 50% / 25%.
-    - Always satisfy the Monte Carlo contract: sum(counts) == n_trials.
-    """
     if n_trials <= 0:
         raise SanityCheckError(f"n_trials must be positive, got {n_trials}")
 
@@ -307,7 +414,7 @@ def _make_segments_for_trials(n_trials: int) -> List[Dict[str, Any]]:
     c3 = n_trials - c1 - c2  # force exact sum
 
     if c1 <= 0 or c2 <= 0 or c3 <= 0:
-        raise SanityCheckError(f"Invalid segment counts after scaling: c1={c1}, c2={c2}, c3={c3}")
+        raise SanityCheckError(f"Invalid segment counts: c1={c1}, c2={c2}, c3={c3}")
 
     return [
         {"value": 0.7, "count": int(c1)},
@@ -317,14 +424,6 @@ def _make_segments_for_trials(n_trials: int) -> List[Dict[str, Any]]:
 
 
 def _spot_cfar_heterogeneous(*, seed: int, n_trials: int) -> None:
-    """
-    Run a deterministic heterogeneous Monte Carlo "spot" to expose non-homogeneity effects.
-
-    Important
-    ---------
-    We do NOT enforce that heterogeneous runs meet the target Pfa.
-    The point is to produce a reproducible datapoint and ensure the code path works.
-    """
     pfa_target = 1e-3
     n_ref = 32
 
@@ -355,7 +454,7 @@ def _spot_cfar_heterogeneous(*, seed: int, n_trials: int) -> None:
     if not math.isfinite(p_emp):
         raise SanityCheckError("Heterogeneous Monte Carlo produced non-finite pfa_empirical")
 
-    print(f"[PASS] MC spot (hetero path executes) (n_trials={n_trials}, emp={p_emp:.6g})")
+    print(f"[PASS] MC spot (hetero executes) (n_trials={n_trials}, emp={p_emp:.6g})")
 
 
 # ---------------------------------------------------------------------
@@ -364,22 +463,23 @@ def _spot_cfar_heterogeneous(*, seed: int, n_trials: int) -> None:
 
 def _check_signal_level_smoke(*, seed: int) -> None:
     """
-    Signal-level engine smoke test + invariants (v1).
+    Signal-level engine smoke test + invariants.
 
-    This check is intentionally "boring" and strict:
-    - It ensures the signal_level engine executes on a valid performance-style config.
-    - It validates key invariants that must hold for the RD-map artifact to be trusted.
+    If your repo intentionally removes/renames signal_level, fail loudly: this harness
+    is meant to catch that regression.
     """
-    cfg = _base_signal_level_cfg()
+    try:
+        from core.simulation.signal_level import run_signal_level_case  # local import for clearer failure
+    except Exception as exc:
+        raise SanityCheckError(f"signal_level import failed: {exc}")
 
-    # Keep detection enabled so the CFAR code path is exercised.
+    cfg = _base_signal_level_cfg()
     cfg["detection"] = {"pfa": 1e-3}
 
     m = run_signal_level_case(cfg, seed=int(seed))
 
     if not isinstance(m, dict):
         raise SanityCheckError("signal_level must return a dict metrics object")
-
     if m.get("engine") != "signal_level":
         raise SanityCheckError(f"signal_level metrics.engine must be 'signal_level', got {m.get('engine')}")
 
@@ -434,7 +534,6 @@ def _check_signal_level_smoke(*, seed: int) -> None:
     if not (math.isfinite(snr_lin) and snr_lin >= 0.0):
         raise SanityCheckError(f"signal_level snr_injected_lin must be finite and >= 0, got {snr_lin}")
 
-    # Optional detection output checks (we enabled it in cfg)
     det = m.get("detection", None)
     if not isinstance(det, dict):
         raise SanityCheckError("signal_level detection dict missing (expected when detection.pfa is provided)")
@@ -461,13 +560,6 @@ def _check_signal_level_smoke(*, seed: int) -> None:
 # ---------------------------------------------------------------------
 
 def _base_model_based_cfg() -> Dict[str, Any]:
-    """
-    Minimal deterministic model_based config used by sanity checks.
-
-    Notes
-    -----
-    Values are chosen to be physically plausible but not tied to a specific radar.
-    """
     return {
         "radar": {
             "fc_hz": 10.0e9,
@@ -495,15 +587,6 @@ def _base_model_based_cfg() -> Dict[str, Any]:
 
 
 def _base_signal_level_cfg() -> Dict[str, Any]:
-    """
-    Minimal deterministic performance-style config for signal_level sanity checks.
-
-    Design intent
-    -------------
-    - Uses only performance_case sections (no schema changes, no new config files).
-    - Geometry is sized to meet CFAR neighborhood assumptions (>= 5x5).
-    - Keeps values plausible and deterministic.
-    """
     return {
         "radar": {
             "fc_hz": 10.0e9,
@@ -528,7 +611,6 @@ def _base_signal_level_cfg() -> Dict[str, Any]:
             "beams_per_scan": 1,
             "n_cpi_per_dwell": 1,
         },
-        # Range is only used to compute Pr for the injected target; no bin-mapping is assumed.
         "scenario": {"range_m": 10_000.0},
     }
 

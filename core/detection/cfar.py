@@ -47,8 +47,7 @@ This is a library module; it is called by detection pipelines and tests.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Iterable, Optional, Tuple, Union
+from typing import Optional, Tuple, Union
 import math
 
 import numpy as np

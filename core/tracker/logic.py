@@ -81,7 +81,7 @@ Stability / Compatibility
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
@@ -385,8 +385,8 @@ class Tracker:
         K = trk.P @ H.T @ S_inv
 
         trk.x = trk.x + (K @ y)
-        I = np.eye(6, dtype=float)
-        trk.P = (I - K @ H) @ trk.P
+        I6 = np.eye(6, dtype=float)
+        trk.P = (I6 - K @ H) @ trk.P
 
     def _mahalanobis_pos2(self, trk: Track, z: np.ndarray, R: np.ndarray) -> float:
         H = np.zeros((3, 6), dtype=float)

@@ -50,7 +50,6 @@ This module is not a CLI. Validate via:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Optional
 import numpy as np
 
 

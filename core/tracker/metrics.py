@@ -47,8 +47,7 @@ The output schema is stable in v1: keys documented below will not be renamed.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Sequence, Tuple
-import math
+from typing import Any, Dict, List, Sequence
 
 import numpy as np
 

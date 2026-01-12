@@ -52,7 +52,6 @@ html = render_case_report_html(
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, Dict, Optional, Mapping
 import base64
 import json
