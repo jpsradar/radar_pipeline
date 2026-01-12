@@ -3,59 +3,16 @@ reports/case_generators.py
 
 HTML case-report generator for radar_pipeline (V1).
 
-Purpose
--------
-Generate a polished, recruiter-friendly HTML report for a *single* case run directory
-(e.g., results/cases/<run_name>/). The report is derived exclusively from metrics.json
-(and optionally case_manifest.json) produced by the pipeline.
+Change in this revision
+-----------------------
+- Redact absolute paths in the HTML header ("Case dir" and "Metrics") so the report is
+  safe to publish (GitHub/LinkedIn) without leaking local filesystem locations.
 
-Design goals
-------------
-- Professional UX: readable HTML report with summary KPIs, plots, and configuration context.
-- Reproducible: deterministic output given the same metrics.json.
-- Zero "magic": no hidden assumptions; if a field is missing, the report shows a warning.
-- Minimal dependencies: standard library + matplotlib only.
-
-Inputs
+Policy
 ------
-- metrics.json: required (primary artifact)
-- case_manifest.json: optional (adds run metadata/context)
-
-Outputs
--------
-- report.html: standalone HTML (includes plots embedded as base64 PNG for portability)
-- plots/*.png: also written to disk for convenience
-- report_assets.json: optional debug dump of what was plotted (not required; disabled by default)
-
-Supported engines (V1)
-----------------------
-- model_based:
-    * SNR vs range
-    * Pd vs range (if detection present)
-    * Received power vs range
-- signal_level:
-    * RD power stats table
-    * Histogram of RD power (log-scale)
-    * Target cell power vs threshold (if detection present)
-- monte_carlo / pfa_monte_carlo:
-    * Pfa target vs empirical + Wilson CI (interval plot)
-- mc_pd_detector:
-    * Pd vs SNR curve + Wilson CI bands (if present)
-    * H0 Pfa empirical + CI summary (if present)
-
-How to use
-----------
-Usually called by:
-- cli.make_case_report (standalone)
-- cli.run_case --report (auto after run)
-
-Example:
-    python -m cli.make_case_report --in results/cases/<run_dir>
-
-Notes
------
-This report generator does not run simulations. It is a pure post-processing step
-on pipeline outputs.
+- If a path is inside the project root (assumed to be the current working directory
+  at report generation time), display it as "${PROJECT_ROOT}/<relative>".
+- Otherwise, display only the filename (basename).
 """
 
 from __future__ import annotations
@@ -64,7 +21,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import base64
-import io
 import json
 import math
 import textwrap
@@ -156,14 +112,19 @@ def generate_case_report_html(
     else:
         warnings.append(f"Engine '{engine}' is not explicitly supported by the case report generator (V1).")
 
+    # Redact absolute paths for publish-safe HTML.
+    project_root = Path.cwd().resolve()
+    case_dir_disp = _pretty_path(case_dir, project_root)
+    metrics_path_disp = _pretty_path(mp, project_root)
+
     html = _render_full_html(
         title=report_title,
         engine=engine,
         summary_html=summary_html,
         plots=plots,
         warnings=warnings,
-        metrics_path=mp,
-        case_dir=case_dir,
+        metrics_path_display=metrics_path_disp,
+        case_dir_display=case_dir_disp,
         generated_utc=_dt.datetime.now(tz=_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
 
@@ -274,9 +235,6 @@ def _plots_signal_level(*, metrics: Dict[str, Any], plots_dir: Path, warnings: L
         warnings.append("signal_level: missing rd_power_map_stats (skipping RD plots).")
         return out
 
-    # Histogram of RD power (we only have summary stats in metrics; no full RD map is saved).
-    # So we can still show a "stats card" and optionally a synthetic illustration is NOT allowed.
-    # We'll plot a simple bar chart of percentiles + max for visualization.
     keys = ["median", "p90", "p99", "max"]
     vals = []
     for k in keys:
@@ -296,7 +254,6 @@ def _plots_signal_level(*, metrics: Dict[str, Any], plots_dir: Path, warnings: L
     _save_fig(fig, png)
     out.append(("RD Power Summary (log scale)", _png_to_data_uri(png)))
 
-    # Target cell power vs threshold (if detection present)
     det = metrics.get("detection")
     if isinstance(det, dict):
         tpow = det.get("target_cell_power")
@@ -321,7 +278,6 @@ def _plots_signal_level(*, metrics: Dict[str, Any], plots_dir: Path, warnings: L
 def _plots_monte_carlo_pfa(*, metrics: Dict[str, Any], plots_dir: Path, warnings: List[str]) -> List[Tuple[str, str]]:
     out: List[Tuple[str, str]] = []
 
-    # Wrapper output style: {"result": {...}, "wrapper": {...}}
     res = metrics.get("result") if isinstance(metrics.get("result"), dict) else metrics
     if not isinstance(res, dict):
         warnings.append("monte_carlo: unexpected metrics structure (missing dict result).")
@@ -348,7 +304,6 @@ def _plots_monte_carlo_pfa(*, metrics: Dict[str, Any], plots_dir: Path, warnings
     ax.set_ylabel("Pfa")
     ax.set_yscale("log")
 
-    # Draw CI as error bar on empirical if available
     if _finite(low) and _finite(high):
         y = float(pfa_emp)
         yerr = np.array([[y - float(low)], [float(high) - y]])
@@ -391,7 +346,6 @@ def _plots_mc_pd_detector(*, metrics: Dict[str, Any], plots_dir: Path, warnings:
     ax.set_ylabel("Pd")
     ax.set_ylim(0.0, 1.0)
 
-    # Wilson CI band if present
     wil = pd_h1.get("wilson_95")
     if isinstance(wil, list) and len(wil) == len(x):
         low = np.asarray([float(w.get("low", np.nan)) for w in wil], dtype=float)
@@ -432,8 +386,8 @@ def _render_full_html(
     summary_html: str,
     plots: List[Tuple[str, str]],
     warnings: List[str],
-    metrics_path: Path,
-    case_dir: Path,
+    metrics_path_display: str,
+    case_dir_display: str,
     generated_utc: str,
 ) -> str:
     warn_html = ""
@@ -446,7 +400,6 @@ def _render_full_html(
         </section>
         """
 
-    plots_html = ""
     if plots:
         blocks = []
         for caption, uri in plots:
@@ -490,8 +443,8 @@ def _render_full_html(
       <div class="meta">
         <span><b>Engine:</b> { _escape(engine) }</span>
         <span><b>Generated (UTC):</b> { _escape(generated_utc) }</span>
-        <span><b>Case dir:</b> <code>{_escape(str(case_dir))}</code></span>
-        <span><b>Metrics:</b> <code>{_escape(str(metrics_path))}</code></span>
+        <span><b>Case dir:</b> <code>{_escape(case_dir_display)}</code></span>
+        <span><b>Metrics:</b> <code>{_escape(metrics_path_display)}</code></span>
       </div>
     </div>
   </header>
@@ -508,7 +461,7 @@ def _render_full_html(
     <section class="card">
       <h2>Raw Metrics (excerpt)</h2>
       <p class="hint">This is a compact preview. The source of truth is <code>metrics.json</code>.</p>
-      <pre class="code">{_escape(_pretty_json_excerpt(metrics_path, max_chars=12000))}</pre>
+      <pre class="code">{_escape(_pretty_json_excerpt_from_display(metrics_path_display, max_chars=12000))}</pre>
     </section>
   </main>
 
@@ -523,10 +476,8 @@ def _render_full_html(
 def _render_summary_table(*, metrics: Dict[str, Any], manifest: Optional[Dict[str, Any]], engine: str, warnings: List[str]) -> str:
     rows: List[Tuple[str, str]] = []
 
-    # Common fields
     rows.append(("engine", engine))
 
-    # Manifest fields (if present)
     if isinstance(manifest, dict):
         rows.append(("run_name", str(manifest.get("run_name", "")) or "(missing)"))
         rows.append(("git", str(manifest.get("git", {}).get("hash", "")) if isinstance(manifest.get("git"), dict) else "(missing)"))
@@ -538,7 +489,6 @@ def _render_summary_table(*, metrics: Dict[str, Any], manifest: Optional[Dict[st
     else:
         warnings.append("case_manifest.json not found (summary will omit run metadata).")
 
-    # Engine-specific highlights
     if engine == "model_based":
         ranges = _get_list(metrics, "ranges_m", nested=("metrics", "ranges_m"))
         snr_db = _get_list(metrics, "snr_db", nested=("snr_db",))
@@ -581,11 +531,7 @@ def _render_summary_table(*, metrics: Dict[str, Any], manifest: Optional[Dict[st
             if isinstance(thr.get("n_pulses"), int):
                 rows.append(("n_pulses", str(thr["n_pulses"])))
 
-    # Render
-    trs = "\n".join(
-        f"<tr><th>{_escape(k)}</th><td>{_escape(v)}</td></tr>"
-        for k, v in rows
-    )
+    trs = "\n".join(f"<tr><th>{_escape(k)}</th><td>{_escape(v)}</td></tr>" for k, v in rows)
     return f"""
     <table class="table">
       <tbody>
@@ -708,6 +654,24 @@ def _default_css() -> str:
 
 
 # ----------------------------
+# Path display helpers (publish-safe)
+# ----------------------------
+
+def _pretty_path(path: Path, project_root: Path) -> str:
+    """
+    Render a path without leaking absolute filesystem locations.
+
+    - If `path` is inside `project_root`: "${PROJECT_ROOT}/<relative>"
+    - Otherwise: "<basename>"
+    """
+    try:
+        rel = path.resolve().relative_to(project_root.resolve())
+        return str(Path("${PROJECT_ROOT}") / rel)
+    except Exception:
+        return path.name
+
+
+# ----------------------------
 # JSON helpers / safety
 # ----------------------------
 
@@ -724,6 +688,29 @@ def _pretty_json_excerpt(path: Path, *, max_chars: int) -> str:
     if len(txt) <= max_chars:
         return txt
     return txt[:max_chars] + "\n... (truncated) ...\n"
+
+
+def _pretty_json_excerpt_from_display(display_path: str, *, max_chars: int) -> str:
+    """
+    The HTML wants to show a metrics excerpt, but the header uses a redacted path string.
+
+    We keep the excerpt behavior unchanged by attempting to locate metrics.json relative
+    to the current working directory when possible; otherwise we return a placeholder.
+
+    This function is intentionally conservative: it should never leak absolute paths.
+    """
+    try:
+        # If display is "${PROJECT_ROOT}/something", strip it and use cwd as the root.
+        prefix = "${PROJECT_ROOT}/"
+        if display_path.startswith(prefix):
+            rel = display_path[len(prefix):]
+            p = (Path.cwd() / rel).resolve()
+            if p.exists() and p.name == "metrics.json":
+                return _pretty_json_excerpt(p, max_chars=max_chars)
+        # Otherwise, do not attempt to resolve arbitrary paths.
+        return "<metrics excerpt unavailable (path redacted)>"
+    except Exception:
+        return "<metrics excerpt unavailable (path redacted)>"
 
 
 def _escape(s: str) -> str:
@@ -745,11 +732,9 @@ def _finite(x: Any) -> bool:
 
 
 def _get_list(metrics: Dict[str, Any], key: str, *, nested: Tuple[str, ...]) -> Optional[List[Any]]:
-    # Try direct key first
     v = metrics.get(key)
     if isinstance(v, list):
         return v
-    # Try nested path
     cur: Any = metrics
     for k in nested:
         if not isinstance(cur, dict):
