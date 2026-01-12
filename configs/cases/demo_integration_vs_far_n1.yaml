@@ -1,0 +1,63 @@
+# configs/cases/demo_integration_vs_far_n1.yaml
+#
+# Phase 2.1 canonical trade-off:
+# Integration (N pulses) vs system-level FAR (per second) given a fixed RD grid.
+#
+# Design intent
+# -------------
+# - Keep Pfa fixed.
+# - Keep RD grid size fixed (n_range_bins, n_doppler_bins).
+# - Change only n_pulses.
+#
+# Why this shows a trade-off
+# --------------------------
+# FAR_per_second = Pfa * (cells_per_cpi) * (cpis_per_second) * (beams_per_scan)
+# If n_doppler_bins is held fixed while n_pulses increases, CPI duration grows
+# => cpis_per_second decreases => FAR_per_second decreases, even with same Pfa.
+#
+# Run:
+#   python -m cli.run_case --case configs/cases/demo_integration_vs_far_n1.yaml --engine auto --seed 123 --overwrite --strict
+
+execution:
+  mode: model_based
+
+assumptions:
+  - "Noise-limited receiver; additive white Gaussian noise at matched-filter output."
+  - "Square-law energy detector; chi-square family under H0/H1 as documented in metrics.detection.contract."
+  - "RD grid size is fixed by geometry; FAR conversion uses rd_cell domain with explicit counts."
+
+radar:
+  fc_hz: 1.0e+10
+  tx_power_w: 1.0e+3
+  prf_hz: 1.0e+3
+  duty_cycle: 0.1
+
+antenna:
+  gain_tx_db: 30.0
+  gain_rx_db: 30.0
+
+receiver:
+  bw_hz: 5.0e+6
+  nf_db: 5.0
+  temperature_k: 290.0
+
+target:
+  rcs_sqm: 1.0
+
+environment:
+  system_losses_db: 0.0
+
+detection:
+  pfa: 1.0e-6
+  n_pulses: 1
+  integration: noncoherent
+
+metrics:
+  ranges_m: [10000.0, 15000.0, 20000.0, 30000.0, 40000.0]
+
+geometry:
+  n_range_bins: 256
+  # Fixed Doppler grid size (deliberately NOT tied to n_pulses).
+  n_doppler_bins: 256
+  beams_per_scan: 1
+  n_cpi_per_dwell: 1

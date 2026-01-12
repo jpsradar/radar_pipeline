@@ -1,0 +1,49 @@
+# configs/cases/demo_integration_vs_far_n16.yaml
+#
+# Same as demo_integration_vs_far_n1.yaml, but with N=16 pulses integrated.
+#
+# Run:
+#   python -m cli.run_case --case configs/cases/demo_integration_vs_far_n16.yaml --engine auto --seed 123 --overwrite --strict
+
+execution:
+  mode: model_based
+
+assumptions:
+  - "Noise-limited receiver; additive white Gaussian noise at matched-filter output."
+  - "Square-law energy detector; chi-square family under H0/H1 as documented in metrics.detection.contract."
+  - "RD grid size is fixed by geometry; FAR conversion uses rd_cell domain with explicit counts."
+
+radar:
+  fc_hz: 1.0e+10
+  tx_power_w: 1.0e+3
+  prf_hz: 1.0e+3
+  duty_cycle: 0.1
+
+antenna:
+  gain_tx_db: 30.0
+  gain_rx_db: 30.0
+
+receiver:
+  bw_hz: 5.0e+6
+  nf_db: 5.0
+  temperature_k: 290.0
+
+target:
+  rcs_sqm: 1.0
+
+environment:
+  system_losses_db: 0.0
+
+detection:
+  pfa: 1.0e-6
+  n_pulses: 16
+  integration: noncoherent
+
+metrics:
+  ranges_m: [10000.0, 15000.0, 20000.0, 30000.0, 40000.0]
+
+geometry:
+  n_range_bins: 256
+  n_doppler_bins: 256
+  beams_per_scan: 1
+  n_cpi_per_dwell: 1
