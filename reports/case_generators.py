@@ -1,18 +1,42 @@
 """
 reports/case_generators.py
 
-HTML case-report generator for radar_pipeline (V1).
+Standalone HTML case report generator for radar_pipeline runs.
 
-Change in this revision
------------------------
-- Redact absolute paths in the HTML header ("Case dir" and "Metrics") so the report is
-  safe to publish (GitHub/LinkedIn) without leaking local filesystem locations.
-
-Policy
+Intent
 ------
-- If a path is inside the project root (assumed to be the current working directory
-  at report generation time), display it as "${PROJECT_ROOT}/<relative>".
-- Otherwise, display only the filename (basename).
+Convert a single run directory (results/cases/<run_id>/) into a portable, recruiter-friendly
+artifact:
+- report.html (self-contained; plots embedded as base64)
+- plots/*.png (also persisted for convenience)
+
+The report is *pure post-processing*:
+- It does not run simulations.
+- It only reads pipeline outputs (metrics.json, optionally case_manifest.json).
+
+Design principles
+-----------------
+- Deterministic output given the same inputs (stable plots + stable ordering).
+- Fail-soft behavior: missing fields become explicit warnings in the report.
+- Minimal dependencies: standard library + NumPy + Matplotlib.
+
+Publish-safety policy
+---------------------
+The report must be safe to share publicly:
+- No absolute filesystem paths are rendered in HTML.
+- Paths are displayed as "${PROJECT_ROOT}/..." when resolvable, otherwise reduced to basenames.
+
+Supported output "shapes" (by engine family)
+--------------------------------------------
+- model_based: range-dependent curves (e.g., SNR, Pd, received power)
+- signal_level: RD summary statistics and detection sanity plots
+- monte_carlo / pfa_monte_carlo: empirical Pfa vs target with confidence intervals
+- mc_pd_detector: Pd vs SNR with confidence interval band (when available)
+
+Non-goals
+---------
+- This module does not validate physical correctness of metrics.
+- It does not attempt to infer missing data or synthesize unavailable arrays.
 """
 
 from __future__ import annotations
@@ -95,9 +119,11 @@ def generate_case_report_html(
     engine = _infer_engine(metrics)
     report_title = title or f"Radar Pipeline Case Report — {engine}"
 
-    # Build sections (text + plots)
     warnings: List[str] = []
-    plots: List[Tuple[str, str]] = []  # (caption, data_uri)
+    plots: List[Tuple[str, str]] = []
+
+    # Optional cross-run validation (model vs MC)
+    validation_obj = _try_load_model_vs_mc_validation(case_dir)
 
     summary_html = _render_summary_table(metrics=metrics, manifest=man, engine=engine, warnings=warnings)
 
@@ -112,19 +138,17 @@ def generate_case_report_html(
     else:
         warnings.append(f"Engine '{engine}' is not explicitly supported by the case report generator (V1).")
 
-    # Redact absolute paths for publish-safe HTML.
-    project_root = Path.cwd().resolve()
-    case_dir_disp = _pretty_path(case_dir, project_root)
-    metrics_path_disp = _pretty_path(mp, project_root)
+    validation_html = _render_validation_card(validation_obj, warnings=warnings)
 
     html = _render_full_html(
         title=report_title,
         engine=engine,
         summary_html=summary_html,
+        validation_html=validation_html,
         plots=plots,
         warnings=warnings,
-        metrics_path_display=metrics_path_disp,
-        case_dir_display=case_dir_disp,
+        metrics_path=mp,
+        case_dir=case_dir,
         generated_utc=_dt.datetime.now(tz=_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
 
@@ -132,7 +156,7 @@ def generate_case_report_html(
     report_html.write_text(html, encoding="utf-8")
 
     return CaseReportPaths(out_dir=out_dir, plots_dir=plots_dir, report_html=report_html)
-
+    
 
 # ----------------------------
 # Engine inference
@@ -384,10 +408,11 @@ def _render_full_html(
     title: str,
     engine: str,
     summary_html: str,
+    validation_html: str,
     plots: List[Tuple[str, str]],
     warnings: List[str],
-    metrics_path_display: str,
-    case_dir_display: str,
+    metrics_path: Path,
+    case_dir: Path,
     generated_utc: str,
 ) -> str:
     warn_html = ""
@@ -400,6 +425,7 @@ def _render_full_html(
         </section>
         """
 
+    plots_html = ""
     if plots:
         blocks = []
         for caption, uri in plots:
@@ -443,8 +469,6 @@ def _render_full_html(
       <div class="meta">
         <span><b>Engine:</b> { _escape(engine) }</span>
         <span><b>Generated (UTC):</b> { _escape(generated_utc) }</span>
-        <span><b>Case dir:</b> <code>{_escape(case_dir_display)}</code></span>
-        <span><b>Metrics:</b> <code>{_escape(metrics_path_display)}</code></span>
       </div>
     </div>
   </header>
@@ -455,13 +479,14 @@ def _render_full_html(
       {summary_html}
     </section>
 
+    {validation_html}
     {warn_html}
     {plots_html}
 
     <section class="card">
       <h2>Raw Metrics (excerpt)</h2>
       <p class="hint">This is a compact preview. The source of truth is <code>metrics.json</code>.</p>
-      <pre class="code">{_escape(_pretty_json_excerpt_from_display(metrics_path_display, max_chars=12000))}</pre>
+      <pre class="code">{_escape(_pretty_json_excerpt(metrics_path, max_chars=12000))}</pre>
     </section>
   </main>
 
@@ -492,14 +517,25 @@ def _render_summary_table(*, metrics: Dict[str, Any], manifest: Optional[Dict[st
     if engine == "model_based":
         ranges = _get_list(metrics, "ranges_m", nested=("metrics", "ranges_m"))
         snr_db = _get_list(metrics, "snr_db", nested=("snr_db",))
+
         if ranges is not None:
             rows.append(("n_ranges", str(len(ranges))))
         if snr_db is not None and len(snr_db) > 0:
             rows.append(("snr_db_min", f"{min(map(float, snr_db)):.3g}"))
             rows.append(("snr_db_max", f"{max(map(float, snr_db)):.3g}"))
+
         det = metrics.get("detection")
-        if isinstance(det, dict) and isinstance(det.get("pfa"), (int, float)):
-            rows.append(("pfa", f"{float(det['pfa']):.3g}"))
+        if isinstance(det, dict):
+            if isinstance(det.get("pfa_target"), (int, float)):
+                rows.append(("pfa_target", f"{float(det['pfa_target']):.3g}"))
+            if isinstance(det.get("threshold"), (int, float)):
+                rows.append(("threshold", f"{float(det['threshold']):.6g}"))
+            if isinstance(det.get("n_pulses"), int):
+                rows.append(("n_pulses", str(det["n_pulses"])))
+            if isinstance(det.get("integration"), str):
+                rows.append(("integration", str(det["integration"])))
+        else:
+            warnings.append("model_based: missing detection block (cannot summarize Pfa/threshold/integration).")
 
     if engine == "signal_level":
         rd = metrics.get("rd_grid")
@@ -531,13 +567,82 @@ def _render_summary_table(*, metrics: Dict[str, Any], manifest: Optional[Dict[st
             if isinstance(thr.get("n_pulses"), int):
                 rows.append(("n_pulses", str(thr["n_pulses"])))
 
-    trs = "\n".join(f"<tr><th>{_escape(k)}</th><td>{_escape(v)}</td></tr>" for k, v in rows)
+    trs = "\n".join(
+        f"<tr><th>{_escape(k)}</th><td>{_escape(v)}</td></tr>"
+        for k, v in rows
+    )
     return f"""
     <table class="table">
       <tbody>
         {trs}
       </tbody>
     </table>
+    """
+    
+    
+def _render_validation_card(validation_obj: Optional[Dict[str, Any]], *, warnings: List[str]) -> str:
+    """
+    Render a compact "model vs Monte Carlo" sanity card, if the artifact exists.
+
+    This is intentionally minimal:
+    - It should be stable even if the validation JSON evolves.
+    - If fields are missing, we warn and still render what we can.
+    """
+    if validation_obj is None:
+        return ""
+
+    if not isinstance(validation_obj, dict):
+        warnings.append("Validation artifact exists but is not a JSON object (skipping validation card).")
+        return ""
+
+    res = validation_obj.get("result")
+    if not isinstance(res, dict):
+        warnings.append("Validation artifact missing 'result' object (skipping validation card).")
+        return ""
+
+    disc = res.get("discrepancy", {})
+    if not isinstance(disc, dict):
+        disc = {}
+
+    mc = res.get("monte_carlo", {})
+    if not isinstance(mc, dict):
+        mc = {}
+
+    n_trials = mc.get("n_trials", None)
+    pd_abs_err_max = disc.get("pd_abs_err_max", None)
+    pd_abs_err_mean = disc.get("pd_abs_err_mean", None)
+
+    def fmt(x: Any) -> str:
+        try:
+            xf = float(x)
+            if not math.isfinite(xf):
+                return "(non-finite)"
+            return f"{xf:.6g}"
+        except Exception:
+            return "(missing)"
+
+    rows = [
+        ("artifact", "results/validation/model_vs_mc_pd.json"),
+        ("n_trials_per_point", str(int(n_trials)) if isinstance(n_trials, int) else "(missing)"),
+        ("pd_abs_err_max", fmt(pd_abs_err_max)),
+        ("pd_abs_err_mean", fmt(pd_abs_err_mean)),
+    ]
+
+    trs = "\n".join(f"<tr><th>{_escape(k)}</th><td>{_escape(v)}</td></tr>" for k, v in rows)
+
+    return f"""
+    <section class="card">
+      <h2>Model vs Monte Carlo (sanity)</h2>
+      <p class="hint">
+        This check validates that the closed-form detector model matches an empirical Monte Carlo estimate
+        under the exact same detector contract (df / threshold / noncentrality).
+      </p>
+      <table class="table">
+        <tbody>
+          {trs}
+        </tbody>
+      </table>
+    </section>
     """
 
 
@@ -743,3 +848,53 @@ def _get_list(metrics: Dict[str, Any], key: str, *, nested: Tuple[str, ...]) -> 
     if isinstance(cur, list):
         return cur
     return None
+    
+
+def _find_project_root(start: Path) -> Path:
+    """
+    Heuristically find the repository root to locate cross-run artifacts (e.g., results/validation/*).
+
+    Strategy
+    --------
+    Walk upwards until we find a pyproject.toml (preferred) or .git (fallback).
+    If not found, return the resolved start directory.
+    """
+    cur = Path(start).resolve()
+    for _ in range(30):
+        if (cur / "pyproject.toml").exists():
+            return cur
+        if (cur / ".git").exists():
+            return cur
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+    return Path(start).resolve()
+
+
+def _try_load_model_vs_mc_validation(case_dir: Path) -> Optional[Dict[str, Any]]:
+    """
+    Load the optional model-vs-MC validation artifact if present.
+
+    Contract
+    --------
+    Expected location:
+        <repo_root>/results/validation/model_vs_mc_pd.json
+
+    Returns
+    -------
+    dict | None
+        Parsed JSON if present and valid, else None.
+    """
+    repo_root = _find_project_root(case_dir)
+    p = repo_root / "results" / "validation" / "model_vs_mc_pd.json"
+    if not p.exists():
+        return None
+
+    try:
+        obj = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    if not isinstance(obj, dict):
+        return None
+    return obj
