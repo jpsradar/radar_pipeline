@@ -37,3 +37,5 @@ plots_out/
 
 # Logs
 *.log
+# Local artifacts (do not commit)
+Bloque_*.zip
