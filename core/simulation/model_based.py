@@ -7,65 +7,33 @@ What this module does (serious baseline)
 ----------------------------------------
 - Computes a monostatic radar equation budget (received power vs range).
 - Computes receiver noise power using k*T*B and Noise Figure (NF).
-- Produces SNR (and a placeholder SINR hook) in linear and dB.
+- Produces SNR in linear and dB (noise-limited baseline; SINR is an extension hook).
 - Computes detection performance (Pd) for a square-law energy detector using
-  correct chi-square / noncentral chi-square statistics (no hand-wavy approximations).
+  chi-square / noncentral chi-square statistics (no approximations).
 
 Scope (v1)
 ----------
-- Primary use: performance/trade sweeps (fast).
-- Assumes a pulsed (or pulse-Doppler) style "range cell" matched-filter output.
-- Uses noncoherent integration by default (sum of pulse energies), but also supports
-  a coherent-like mode as "N=1 with boosted SNR" if you provide coherent_integration=True.
+- Primary use: performance and trade sweeps (fast).
+- Assumes a pulsed (or pulse-Doppler) style matched-filter output per range cell.
+- Supports:
+  - Noncoherent integration: sum of pulse energies (chi-square with 2N DOF).
+  - Coherent-like baseline: 2-DOF energy test with boosted SNR_total = N * SNR_per_pulse.
 
-Inputs (cfg dict)
------------------
-Expected (minimal) fields (schema will harden this later):
-- cfg["radar"]:
-    - fc_hz: carrier frequency [Hz]
-    - tx_power_w: transmit power [W] (peak or average: you define contract)
-- cfg["antenna"]:
-    - gain_tx_db: Tx antenna gain [dB]
-    - gain_rx_db: Rx antenna gain [dB] (often same as Tx for monostatic)
-- cfg["receiver"]:
-    - bw_hz: noise bandwidth [Hz]
-    - nf_db: noise figure [dB]
-    - temperature_k: receiver noise temperature [K] (optional, default 290 K)
-- cfg["target"]:
-    - rcs_sqm: radar cross section sigma [m^2]
-- cfg["environment"]:
-    - system_losses_db: lumped losses [dB] (optional, default 0 dB)
-- cfg["detection"]:
-    - pfa: probability of false alarm per "trial" (cell) (optional)
-    - n_pulses: number of integrated pulses (optional, default 1)
-    - integration: "noncoherent" | "coherent" (optional, default "noncoherent")
-- cfg["metrics"]:
-    - ranges_m: list[float] of ranges to evaluate [m] (optional)
-      If absent, this module will produce a single-point budget at range_m if provided.
-- cfg["scenario"]:
-    - range_m: single evaluation range [m] (optional)
+Contract for model-vs-experiment comparisons
+--------------------------------------------
+When detection.pfa is provided, this engine MUST emit a fully specified detector contract
+inside metrics["detection"], including:
+- the test statistic definition
+- the assumed H0/H1 distributions and parameters
+- the threshold used
+- the resulting Pd curve
 
-Outputs (metrics dict)
-----------------------
-- "snr_db" and "snr_lin" as arrays aligned to "ranges_m"
-- "pd" as array aligned to "ranges_m" if detection.pfa exists
-- Full intermediate budget terms for traceability
-
-CLI usage
----------
-Called by cli/run_case.py via:
-    metrics = run_model_based_case(cfg, seed)
+This is required so a Monte Carlo experiment can replicate the exact same detector.
 
 Dependencies
 ------------
 - NumPy
-- SciPy (for chi-square / noncentral chi-square distribution functions)
-
-Extension points
-----------------
-- Add clutter/jamming to produce SINR (replace noise power with noise+interference).
-- Add scan loss, dwell/CPI geometry, beam scheduling, CFAR scaling, etc.
-- Add Swerling models by randomizing sigma or using known analytical averages.
+- SciPy (chi-square and noncentral chi-square)
 """
 
 from __future__ import annotations
@@ -122,14 +90,14 @@ def run_model_based_case(cfg: Dict[str, Any], seed: Optional[int] = None) -> Dic
     cfg : dict
         Validated and normalized case configuration.
     seed : int | None
-        Reserved for future stochastic features (e.g., Swerling, random clutter). Not used yet.
+        Reserved for future stochastic features. Not used yet.
 
     Returns
     -------
     dict
         Metrics dictionary to be written to metrics.json.
     """
-    # NOTE: We keep the engine deterministic for now. Seed is stored in the manifest by the CLI.
+    # NOTE: Engine is deterministic. Seed is stored by CLI for provenance.
     _ = seed
 
     # --- Extract and validate minimal required parameters ---
@@ -141,7 +109,7 @@ def run_model_based_case(cfg: Dict[str, Any], seed: Optional[int] = None) -> Dic
     fc_hz = _require_pos_float(radar, "fc_hz")
     tx_power_w = _require_pos_float(radar, "tx_power_w")
 
-    # PRF is required to derive CPI timing for system-level FAR; default is allowed for v1.
+    # PRF is used for explicit CPI timing and FAR conversion.
     prf_hz = _require_pos_float(radar, "prf_hz", default=1_000.0)
 
     gain_tx_db = _require_float(antenna, "gain_tx_db", default=0.0)
@@ -156,7 +124,7 @@ def run_model_based_case(cfg: Dict[str, Any], seed: Optional[int] = None) -> Dic
     env = cfg.get("environment", {}) if isinstance(cfg.get("environment", {}), dict) else {}
     system_losses_db = _require_nonneg_float(env, "system_losses_db", default=0.0)
 
-    # Ranges: prefer metrics.ranges_m (vector), else scenario.range_m (single point)
+    # Ranges: metrics.ranges_m (vector) preferred; else scenario.range_m; else default.
     ranges_m = _get_ranges_m(cfg)
 
     # Detection settings (optional)
@@ -173,9 +141,6 @@ def run_model_based_case(cfg: Dict[str, Any], seed: Optional[int] = None) -> Dic
     # -----------------------------------------------------------------
     # Geometry + counts (explicit, to enable system-level FAR)
     # -----------------------------------------------------------------
-    # NOTE: We do not infer counts from physics here. We either:
-    # - take explicit counts from cfg["geometry"], or
-    # - fall back to conservative defaults (v1), but always report them.
     geometry = cfg.get("geometry", {}) if isinstance(cfg.get("geometry", {}), dict) else {}
 
     n_range_bins = int(geometry.get("n_range_bins", 256))
@@ -211,30 +176,64 @@ def run_model_based_case(cfg: Dict[str, Any], seed: Optional[int] = None) -> Dic
         losses_lin=terms.losses_lin,
     )
 
-    # Noise-limited baseline (SINR hook can extend this)
+    # Noise-limited baseline (SINR extension would modify denominator)
     snr_lin = pr_w / terms.noise_power_w
     snr_db = lin_to_db_power(np.maximum(snr_lin, np.finfo(float).tiny))
 
-    # --- Detection performance (optional, if Pfa provided) ---
+    # --- Detection performance (optional) ---
     pd = None
     threshold = None
     far = None
+    detection_contract: Optional[Dict[str, Any]] = None
+
     if pfa is not None:
         pfa_f = float(pfa)
         if not (0.0 < pfa_f < 1.0):
             raise ValueError(f"detection.pfa must be in (0, 1), got {pfa_f}")
 
+        # Detector contract (explicit, for model-vs-experiment comparisons)
+        # Statistic is always in the POWER/ENERGY domain:
+        #   T = sum_{i=1..N} |z_i|^2    (noncoherent)
+        # or coherent-like baseline:
+        #   T = |z|^2 with boosted SNR_total = N * SNR_per_pulse (df=2)
+        detection_contract = {
+            "pfa_target": pfa_f,
+            "integration": integration,
+            "n_pulses": int(n_pulses),
+            "statistic": {
+                "name": "energy_sum",
+                "definition": "T = sum_{i=1..N} |z_i|^2 (power/energy domain)",
+                "normalization": "unit-variance convention for chi-square family (SciPy chi2/ncx2)",
+            },
+            "h0": {},
+            "h1": {},
+        }
+
         if integration == "noncoherent":
-            # Sum of N pulse energies: under H0 => chi-square with 2N DOF
-            # Under H1 => noncentral chi-square with 2N DOF, noncentrality = 2*N*SNR_per_pulse
+            # Under H0 => chi-square with 2N DOF
+            # Under H1 => noncentral chi-square with 2N DOF, nc = 2*N*SNR_per_pulse
             threshold = _threshold_noncoherent(pfa=pfa_f, n_pulses=n_pulses)
             pd = _pd_noncoherent(threshold=threshold, snr_lin=snr_lin, n_pulses=n_pulses)
+
+            detection_contract["h0"] = {"family": "chi2", "df": int(2 * n_pulses)}
+            detection_contract["h1"] = {
+                "family": "ncx2",
+                "df": int(2 * n_pulses),
+                "noncentrality": "nc = 2*N*SNR_per_pulse",
+            }
         else:
-            # Coherent integration baseline:
-            # We model as a 2-DOF noncentral chi-square (N=1 energy detector) with boosted SNR_total = N*SNR.
-            # This is a pragmatic "serious enough" starting point for coherent processing performance curves.
+            # Coherent-like baseline: df=2 energy detector with boosted SNR_total=N*SNR
             threshold = _threshold_coherent(pfa=pfa_f)
             pd = _pd_coherent(threshold=threshold, snr_lin=snr_lin, n_pulses=n_pulses)
+
+            detection_contract["h0"] = {"family": "chi2", "df": 2}
+            detection_contract["h1"] = {
+                "family": "ncx2",
+                "df": 2,
+                "noncentrality": "nc = 2*SNR_total, with SNR_total = N*SNR_per_pulse",
+            }
+
+        detection_contract["threshold"] = float(threshold)
 
         # System-level FAR conversion (explicit counts)
         far_inputs = FARInputs(
@@ -292,10 +291,15 @@ def run_model_based_case(cfg: Dict[str, Any], seed: Optional[int] = None) -> Dic
         },
     }
 
-    if pd is not None and threshold is not None:
+    if pd is not None and threshold is not None and detection_contract is not None:
+        # NOTE: Keep a flat Pd array for plotting, but also ship the full detector contract.
         metrics["detection"] = {
             "threshold": float(threshold),
             "pd": pd.tolist(),
+            "pfa_target": detection_contract["pfa_target"],
+            "integration": detection_contract["integration"],
+            "n_pulses": detection_contract["n_pulses"],
+            "contract": detection_contract,
         }
 
     if far is not None:
@@ -322,15 +326,7 @@ def _compute_budget_terms(
     bw_hz: float,
     system_losses_db: float,
 ) -> BudgetTerms:
-    """
-    Compute deterministic budget terms for the radar equation and receiver noise.
-
-    Notes
-    -----
-    - Noise power at the receiver input (pre-detection) is modeled as:
-        N = k*T*B * F
-      where F is the noise factor (linear) derived from NF in dB.
-    """
+    """Compute deterministic budget terms for the radar equation and receiver noise."""
     wavelength_m = 299_792_458.0 / fc_hz
 
     gt_lin = db_to_lin_power(gain_tx_db)
@@ -364,9 +360,6 @@ def _received_power_w(
     Monostatic radar equation (received power).
 
     Pr = Pt * Gt * Gr * (lambda^2 * sigma) / ( (4*pi)^3 * R^4 * L )
-
-    Where:
-    - L is the lumped linear loss factor (>= 1).
     """
     r = np.asarray(range_m, dtype=float)
     if np.any(r <= 0.0):
@@ -382,52 +375,25 @@ def _received_power_w(
 # ----------------------------
 
 def _threshold_noncoherent(*, pfa: float, n_pulses: int) -> float:
-    """
-    Threshold for noncoherent integration of N pulses under H0.
-
-    Statistic: sum_{i=1..N} |z_i|^2
-    Under H0: chi-square with 2N DOF (scaled to unit variance convention).
-
-    We use chi2.isf(pfa, df=2N) to obtain the threshold.
-    """
+    """Threshold for noncoherent integration of N pulses under H0 (chi-square with 2N DOF)."""
     df = 2 * n_pulses
     return float(chi2.isf(pfa, df=df))
 
 
 def _pd_noncoherent(*, threshold: float, snr_lin: np.ndarray, n_pulses: int) -> np.ndarray:
-    """
-    Pd for noncoherent integration under a deterministic (nonfluctuating) target model.
-
-    Under H1: noncentral chi-square with:
-    - df = 2N
-    - noncentrality parameter = 2N * SNR_per_pulse
-
-    Pd = P(T > threshold | H1) = sf(threshold, df, nc)
-    """
+    """Pd for noncoherent integration under deterministic target model (ncx2 with nc=2*N*SNR)."""
     df = 2 * n_pulses
     nc = 2.0 * n_pulses * np.asarray(snr_lin, dtype=float)
     return ncx2.sf(threshold, df=df, nc=nc)
 
 
 def _threshold_coherent(*, pfa: float) -> float:
-    """
-    Threshold for a 2-DOF energy detector under H0.
-
-    This corresponds to the N=1 case, used as a baseline for coherent processing
-    by boosting SNR_total = N * SNR and keeping df=2.
-    """
+    """Threshold for 2-DOF energy detector under H0 (baseline for coherent-like model)."""
     return float(chi2.isf(pfa, df=2))
 
 
 def _pd_coherent(*, threshold: float, snr_lin: np.ndarray, n_pulses: int) -> np.ndarray:
-    """
-    Pd for a coherent-like baseline model.
-
-    We approximate coherent integration as SNR_total = N * SNR_per_pulse and a 2-DOF
-    noncentral chi-square test (energy detector with boosted noncentrality).
-
-    Under H1: df=2, nc=2*SNR_total
-    """
+    """Pd for coherent-like baseline (df=2 ncx2 with boosted SNR_total=N*SNR)."""
     snr_total = float(n_pulses) * np.asarray(snr_lin, dtype=float)
     nc = 2.0 * snr_total
     return ncx2.sf(threshold, df=2, nc=nc)
