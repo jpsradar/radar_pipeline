@@ -3,24 +3,10 @@ cli/run_case.py
 
 Reproducible case runner for the radar pipeline.
 
-Key properties
---------------
-- Schema validation and unit normalization happen at load time.
-- Execution is deterministic given (normalized config, seed, engine).
-- Outputs are written to a run directory with a *stable* name:
-    <case_stem>__<engine>__seed<seed>__cfg<hash8>
-
-Why the stable name matters
----------------------------
-A stable run directory name enables:
-- idempotent reruns (no hidden timestamp variance)
-- traceability (run folder name encodes the minimal identity)
-- clean diffs for reports/metrics across revisions
-
-Design constraints
-------------------
-- No absolute paths are written into the manifest or HTML report.
-- If the output directory already exists, the CLI errors out unless --overwrite is used.
+Changes in this revision
+------------------------
+- Print paths relative to project root (or CWD) to avoid leaking absolute paths.
+- Keep stable run directory naming and overwrite-protection behavior.
 """
 
 from __future__ import annotations
@@ -33,8 +19,6 @@ from typing import Any, Dict
 
 from core.config.loaders import ConfigError, LoadOptions, load_case
 from core.config.manifest import compute_config_hash, write_case_manifest
-
-# Engines are imported lazily inside _run_engine to keep CLI import time low.
 
 
 @dataclass(frozen=True)
@@ -55,10 +39,6 @@ class RunIdentity:
         return f"{self.case_stem}__{self.engine}__seed{self.seed}__cfg{self.short_hash}"
 
 
-# ----------------------------
-# CLI
-# ----------------------------
-
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="run_case",
@@ -68,24 +48,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--case", required=True, help="Path to case YAML/JSON.")
     parser.add_argument("--out", default="results/cases", help="Base output dir (default: results/cases).")
 
-    parser.add_argument(
-        "--name",
-        default=None,
-        help="Optional display name (only affects reporting text). Directory naming remains stable.",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=None,
-        help="Optional RNG seed. If omitted, derived from config hash.",
-    )
+    parser.add_argument("--name", default=None, help="Optional display name (report title only).")
+    parser.add_argument("--seed", type=int, default=None, help="Optional RNG seed (default: derived from config).")
     parser.add_argument("--schema-dir", default="configs/schemas", help="Schema folder (default: configs/schemas).")
-
-    parser.add_argument(
-        "--schema",
-        default="case.schema.json",
-        help="Schema filename (default: case.schema.json).",
-    )
+    parser.add_argument("--schema", default="case.schema.json", help="Schema filename (default: case.schema.json).")
 
     parser.add_argument(
         "--engine",
@@ -94,43 +60,23 @@ def _parse_args() -> argparse.Namespace:
         help="Engine selection. 'auto' picks based on presence of a monte_carlo block.",
     )
 
-    parser.add_argument(
-        "--strict",
-        action="store_true",
-        help="If set, fail on unknown config fields (schema strictness).",
-    )
-
-    parser.add_argument(
-        "--report",
-        action="store_true",
-        help="If set, generate a self-contained HTML report in the run directory.",
-    )
-
-    parser.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="If set, allow writing into an existing run directory (dangerous; use for local iteration only).",
-    )
+    parser.add_argument("--strict", action="store_true", help="Fail on unknown config fields.")
+    parser.add_argument("--report", action="store_true", help="Generate report.html in the run directory.")
+    parser.add_argument("--overwrite", action="store_true", help="Allow overwriting an existing run directory.")
 
     return parser.parse_args()
 
 
 def _auto_select_engine(cfg: Dict[str, Any]) -> str:
-    """Auto-select engine based on the loaded case structure."""
     mc = cfg.get("monte_carlo", None)
-    if isinstance(mc, dict):
-        return "monte_carlo"
-    return "model_based"
+    return "monte_carlo" if isinstance(mc, dict) else "model_based"
 
 
 def _derive_seed(config_hash: str) -> int:
-    """Derive a deterministic seed from the config hash when the user does not provide one."""
-    # Use the first 8 hex chars (32-bit) and keep it within signed 31-bit range for NumPy compatibility.
     return int(config_hash[:8], 16) % (2**31 - 1)
 
 
 def _ensure_empty_dir(path: Path, *, overwrite: bool) -> None:
-    """Create an output directory, refusing to overwrite unless explicitly allowed."""
     if path.exists() and not overwrite:
         raise FileExistsError(
             f"Output directory already exists: {path}\n"
@@ -140,58 +86,75 @@ def _ensure_empty_dir(path: Path, *, overwrite: bool) -> None:
 
 
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
-    """Write JSON with stable formatting for readable diffs."""
-    text = json.dumps(payload, sort_keys=True, indent=2)
-    path.write_text(text + "\n", encoding="utf-8")
+    path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
-
-# ----------------------------
-# Engine dispatch
-# ----------------------------
 
 def _run_engine(engine: str, cfg: Dict[str, Any], seed: int) -> Dict[str, Any]:
     engine_n = str(engine).lower().strip()
 
     if engine_n == "model_based":
-        from core.simulation.model_based import run_model_based  # type: ignore
-        return run_model_based(cfg)
+        from core.simulation.model_based import run_model_based_case  # type: ignore
+
+        return run_model_based_case(cfg=cfg, seed=seed)
 
     if engine_n == "monte_carlo":
-        from core.simulation.monte_carlo import run_monte_carlo  # type: ignore
-        return run_monte_carlo(cfg, seed=seed)
+        from core.simulation.monte_carlo import run_pfa_monte_carlo  # type: ignore
+
+        return run_pfa_monte_carlo(cfg=cfg, seed=seed)
 
     if engine_n == "signal_level":
-        from core.simulation.signal_level import run_signal_level  # type: ignore
-        return run_signal_level(cfg, seed=seed)
+        from core.simulation.signal_level import run_signal_level_case  # type: ignore
+
+        return run_signal_level_case(cfg=cfg, seed=seed)
 
     raise ValueError(f"Unknown engine: {engine}")
 
 
-def _write_html_report(out_dir: Path, metrics: Dict[str, Any]) -> None:
-    """Generate a self-contained HTML report (best-effort)."""
-    from reports.make_case_report import make_case_report_html  # type: ignore
+def _write_html_report(out_dir: Path, title: str | None = None) -> None:
+    from reports.case_generators import generate_case_report_html  # type: ignore
 
-    html = make_case_report_html(out_dir=out_dir, metrics=metrics)
-    (out_dir / "report.html").write_text(html, encoding="utf-8")
+    case_dir = out_dir
+    metrics_path = case_dir / "metrics.json"
+    manifest_path = case_dir / "case_manifest.json"
+    manifest_arg = manifest_path if manifest_path.exists() else None
+
+    generate_case_report_html(
+        case_dir=case_dir,
+        metrics_path=metrics_path,
+        manifest_path=manifest_arg,
+        out_dir=case_dir,
+        title=title,
+    )
 
 
-# ----------------------------
-# Main
-# ----------------------------
+def _pretty_path(path: Path, project_root: Path) -> str:
+    """
+    Render a path without leaking absolute filesystem locations.
+
+    - If path is inside project_root: show as ${PROJECT_ROOT}/...
+    - Else: show only the basename.
+    """
+    try:
+        rel = path.resolve().relative_to(project_root.resolve())
+        return str(Path("${PROJECT_ROOT}") / rel)
+    except Exception:
+        return path.name
+
 
 def main() -> int:
     args = _parse_args()
 
+    project_root = Path.cwd().resolve()
+
     case_path = Path(args.case)
     out_base = Path(args.out)
 
-    # 1) Load + validate config first (so naming can be derived from the true normalized config).
     try:
         cfg = load_case(
             case_path,
             schema_dir=args.schema_dir,
             schema_name=args.schema,
-            options=LoadOptions(strict=args.strict, resolve_paths=True, normalize_units=True),
+            options=LoadOptions(strict=bool(args.strict), resolve_paths=True, normalize_units=True),
         )
     except ConfigError as exc:
         print(f"[ERROR] Config load/validation failed: {exc}")
@@ -200,31 +163,27 @@ def main() -> int:
         print(f"[ERROR] Unexpected error while loading config: {exc}")
         return 3
 
-    # 2) Resolve engine.
     selected_engine = args.engine
     if str(selected_engine).lower().strip() == "auto":
         selected_engine = _auto_select_engine(cfg)
 
-    # 3) Compute stable config hash and seed.
-    project_root = Path.cwd()
     cfg_hash = compute_config_hash(cfg, project_root=project_root)
-
     seed = int(args.seed) if args.seed is not None else _derive_seed(cfg_hash)
 
     ident = RunIdentity(case_stem=case_path.stem, engine=selected_engine, seed=seed, config_hash=cfg_hash)
     out_dir = (out_base / ident.run_id).resolve()
 
-    # 4) Create output directory (refuse overwrite by default).
     try:
         _ensure_empty_dir(out_dir, overwrite=bool(args.overwrite))
     except Exception as exc:
-        print(f"[ERROR] {exc}")
+        # Keep the error message but redact absolute paths in the printed line below.
+        msg = str(exc).replace(str(project_root), "${PROJECT_ROOT}")
+        print(f"[ERROR] {msg}")
         return 4
 
-    # 5) Write manifest early (before running engines) so partial runs are still traceable.
     extras = {
         "cli_args": vars(args),
-        "output_dir": str(Path(args.out) / ident.run_id),  # relative user-facing path
+        "output_dir": str(Path(args.out) / ident.run_id),
         "engine_requested": args.engine,
         "engine_selected": selected_engine,
         "run_id": ident.run_id,
@@ -244,7 +203,6 @@ def main() -> int:
         print(f"[ERROR] Failed to write case_manifest.json: {exc}")
         return 5
 
-    # 6) Run engine and write metrics.
     try:
         metrics = _run_engine(selected_engine, cfg, seed=seed)
         _write_json(out_dir / "metrics.json", metrics)
@@ -252,15 +210,14 @@ def main() -> int:
         print(f"[ERROR] Engine run failed: {exc}")
         return 6
 
-    # 7) Optional report.
     if args.report:
         try:
-            _write_html_report(out_dir=out_dir, metrics=metrics)
+            _write_html_report(out_dir=out_dir, title=args.name)
         except Exception as exc:
             print(f"[ERROR] Failed to write report.html: {exc}")
             return 7
 
-    print(f"[OK] Case complete: {out_dir}")
+    print(f"[OK] Case complete: {_pretty_path(out_dir, project_root)}")
     return 0
 
 

@@ -61,17 +61,30 @@ def _safe_path_str(value: str, project_root: Optional[Path]) -> str:
     -----
     - If inside project_root -> "${PROJECT_ROOT}/<relpath>"
     - Else -> "<ABSOLUTE_PATH_REDACTED>:<basename>"
+
+    Important
+    ---------
+    We treat strings as "path-like" if they either:
+      - are absolute paths, OR
+      - contain a path separator, OR
+      - start with '.' or '~'
     """
     if project_root is None:
+        return value
+
+    # Heuristic: only sanitize things that look like paths.
+    looks_like_path = (
+        value.startswith("/")
+        or value.startswith("~")
+        or value.startswith(".")
+        or ("/" in value)
+    )
+    if not looks_like_path:
         return value
 
     try:
         p = Path(value).expanduser()
     except Exception:
-        return value
-
-    # Only sanitize if it looks like a filesystem path.
-    if not ("/" in value or value.startswith(".") or value.startswith("~")):
         return value
 
     try:
@@ -85,6 +98,61 @@ def _safe_path_str(value: str, project_root: Optional[Path]) -> str:
     except Exception:
         return value
 
+
+def build_case_manifest(
+    cfg: Dict[str, Any],
+    *,
+    seed: Optional[int],
+    extras: Optional[Dict[str, Any]],
+    project_root: Optional[Path],
+    engine_package: str = "radar_pipeline",
+    include_identity: bool = True,
+) -> Dict[str, Any]:
+    """
+    Build an in-memory case manifest dict.
+
+    NOTE
+    ----
+    - Paths are sanitized to avoid leaking absolute machine locations.
+    - The config hash is computed over the sanitized config for stability across machines.
+    """
+    pr = project_root.resolve() if project_root is not None else None
+
+    env: Dict[str, Any] = {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "python_version": sys.version.split()[0],
+        "platform": platform.platform(),
+        # Store these but sanitized; they are still useful for debugging.
+        "executable": _safe_path_str(sys.executable, pr),
+        "cwd": _safe_path_str(str(Path.cwd()), pr),
+    }
+    if include_identity:
+        env["user"] = os.environ.get("USER") or os.environ.get("USERNAME") or ""
+        env["hostname"] = platform.node()
+
+    pkg_ver = ""
+    if pkg_version is not None:
+        try:
+            pkg_ver = pkg_version(engine_package)
+        except Exception:
+            pkg_ver = ""
+
+    cfg_hash = compute_config_hash(cfg, project_root=pr)
+
+    manifest: Dict[str, Any] = {
+        "engine_package": engine_package,
+        "engine_version": pkg_ver,
+        "seed": seed,
+        "config_hash": cfg_hash,
+        "case": cfg,
+        "git": _git_info(pr).__dict__ if pr is not None else {"hash": "", "dirty": None},
+        "environment": env,
+        "extras": extras or {},
+    }
+
+    # Final sanitization pass (covers any stray path-like strings).
+    manifest = _walk_sanitize(manifest, pr)
+    return manifest
 
 def _walk_sanitize(obj: Any, project_root: Optional[Path]) -> Any:
     """Recursively sanitize path-like strings inside nested dict/list structures."""
@@ -153,76 +221,6 @@ def compute_config_hash(cfg: Dict[str, Any], *, project_root: Optional[Path]) ->
     sanitized_cfg = _walk_sanitize(cfg, project_root)
     payload = _canonical_json(sanitized_cfg).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
-
-
-def build_case_manifest(
-    cfg: Dict[str, Any],
-    *,
-    seed: Optional[int],
-    extras: Optional[Dict[str, Any]],
-    project_root: Optional[Path],
-    engine_package: str = "radar_pipeline",
-    include_identity: bool = True,
-) -> Dict[str, Any]:
-    """
-    Build an in-memory case manifest dict.
-
-    Parameters
-    ----------
-    cfg:
-        Fully loaded + normalized case config dict.
-    seed:
-        RNG seed used by the run.
-    extras:
-        Arbitrary extra metadata (CLI args, engine selection, output dir, etc).
-    project_root:
-        Repo root path; used to sanitize paths deterministically and compute config hash.
-    engine_package:
-        Package name used for version metadata.
-    include_identity:
-        If False, omit user/hostname.
-
-    Returns
-    -------
-    dict:
-        JSON-serializable manifest.
-    """
-    pr = project_root.resolve() if project_root is not None else None
-
-    env: Dict[str, Any] = {
-        "timestamp_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "python_version": sys.version.split()[0],
-        "platform": platform.platform(),
-        "executable": sys.executable,
-        "cwd": str(Path.cwd()),
-    }
-    if include_identity:
-        env["user"] = os.environ.get("USER") or os.environ.get("USERNAME") or ""
-        env["hostname"] = platform.node()
-
-    pkg_ver = ""
-    if pkg_version is not None:
-        try:
-            pkg_ver = pkg_version(engine_package)
-        except Exception:
-            pkg_ver = ""
-
-    cfg_hash = compute_config_hash(cfg, project_root=pr)
-
-    manifest: Dict[str, Any] = {
-        "engine_package": engine_package,
-        "engine_version": pkg_ver,
-        "seed": seed,
-        "config_hash": cfg_hash,
-        "case": cfg,  # already normalized by loaders
-        "git": _git_info(pr).__dict__ if pr is not None else {"hash": "", "dirty": None},
-        "environment": env,
-        "extras": extras or {},
-    }
-
-    # Sanitize everything path-like in one pass (including the embedded cfg)
-    manifest = _walk_sanitize(manifest, pr)
-    return manifest
 
 
 def _write_json_deterministic(path: Path, payload: Dict[str, Any]) -> None:
