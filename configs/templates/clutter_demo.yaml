@@ -1,0 +1,21 @@
+# configs/templates/clutter_demo.yaml
+#
+# Monte Carlo CA-CFAR template under exponential clutter/noise background.
+# Use with: python -m cli.run_case --engine monte_carlo --case <this>
+
+monte_carlo:
+  seed: 123
+  pfa: 1.0e-3
+  n_trials: 200000
+  detector: ca_cfar_independent
+  n_ref: 32
+  n_cells: 256
+
+  background:
+    model: exponential
+    mean_power: 1.0
+    params: {}
+    hetero:
+      enabled: false
+      mode: multiply
+      mean_multiplier: 1.0

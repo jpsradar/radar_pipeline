@@ -1,0 +1,45 @@
+# configs/cases/demo_pd_noise.yaml
+#
+# End-to-end performance demo (noise-limited PD-style abstraction).
+#
+# Run:
+#   python -m cli.run_case --case configs/cases/demo_pd_noise.yaml --engine model_based --seed 123
+#
+# Output:
+#   results/cases/<run_name>/metrics.json
+
+
+radar:
+  fc_hz: 10000000000.0
+  tx_power_w: 1000.0
+  prf_hz: 1000.0
+  duty_cycle: 0.1
+
+antenna:
+  gain_tx_db: 30.0
+  gain_rx_db: 30.0
+
+receiver:
+  bw_hz: 5000000.0
+  nf_db: 5.0
+  temperature_k: 290.0
+
+target:
+  rcs_sqm: 1.0
+
+environment:
+  system_losses_db: 0.0
+
+detection:
+  pfa: 1.0e-6
+  n_pulses: 16
+  integration: noncoherent
+
+metrics:
+  ranges_m: [10000.0, 15000.0, 20000.0, 30000.0, 40000.0]
+
+geometry:
+  n_range_bins: 256
+  n_doppler_bins: 64
+  beams_per_scan: 10
+  n_cpi_per_dwell: 1

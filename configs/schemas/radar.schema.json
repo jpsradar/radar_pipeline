@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "radar.schema.json",
+  "title": "Radar Subschema (v1)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["fc_hz", "tx_power_w"],
+  "properties": {
+    "fc_hz": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Carrier frequency [Hz]."
+    },
+    "tx_power_w": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Transmit peak power [W]."
+    },
+    "prf_hz": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Pulse repetition frequency [Hz]."
+    },
+    "duty_cycle": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Duty cycle in [0,1]."
+    }
+  }
+}

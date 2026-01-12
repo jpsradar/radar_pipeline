@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "environment.schema.json",
+  "title": "Environment Subschema (v1)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "system_losses_db": {
+      "type": "number",
+      "minimum": 0,
+      "description": "System losses [dB], treated as a power loss factor >= 0 dB."
+    }
+  }
+}

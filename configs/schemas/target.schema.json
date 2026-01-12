@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "target.schema.json",
+  "title": "Target Subschema (v1)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["rcs_sqm"],
+  "properties": {
+    "rcs_sqm": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "description": "Radar cross section (RCS) [m^2]."
+    }
+  }
+}

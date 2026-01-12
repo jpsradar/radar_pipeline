@@ -1,0 +1,54 @@
+# configs/cases/demo_clutter_cfar_hetero.yaml
+#
+# End-to-end Monte Carlo demo (heterogeneous background):
+# - Empirically evaluates CA-CFAR behavior when the background mean power varies
+#   across trials (non-homogeneous environment).
+# - This is intended to expose CFAR brittleness under non-homogeneous clutter.
+#
+# Run:
+#   python -m cli.run_case --case configs/cases/demo_clutter_cfar_hetero.yaml --engine auto --seed 123
+#
+# Output:
+#   results/cases/<run_name>/metrics.json  (contains pfa_target, pfa_empirical, CIs, alpha, etc.)
+
+monte_carlo:
+  # Target probability of false alarm (per CUT / per trial depending on detector mode).
+  pfa: 1.0e-3
+
+  # Independent trials (vectorized) keeps runtime reasonable and statistics stable.
+  n_trials: 2000000
+
+  # Two supported modes in core/simulation/monte_carlo.py:
+  # - ca_cfar_independent: independent CUT + Nref references per trial (best to validate CFAR math)
+  # - ca_cfar_1d_sliding: sliding window on a 1D line (more "realistic" but correlated)
+  detector: ca_cfar_independent
+
+  # For ca_cfar_independent
+  n_ref: 32
+
+  background:
+    # Background power distribution model (POWER domain).
+    # Supported: exponential | weibull | lognormal | k
+    model: exponential
+
+    # Mean power (scale) for exponential background.
+    mean_power: 1.0
+
+    # Optional distribution-specific parameters (unused by exponential)
+    params: {}
+
+    # Heterogeneity hook: mean scaling multiplier applied to samples.
+    # Here: per-trial piecewise-constant mean scaling, defined compactly.
+    hetero:
+      enabled: true
+      mode: multiply
+
+      # Compact, deterministic, reviewable heterogeneity definition.
+      # The sum of counts MUST equal n_trials.
+      mean_multiplier_segments:
+        - value: 0.7
+          count: 500000
+        - value: 1.0
+          count: 1000000
+        - value: 1.8
+          count: 500000

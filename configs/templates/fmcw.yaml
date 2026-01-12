@@ -1,0 +1,34 @@
+# configs/templates/fmcw.yaml
+#
+# FMCW placeholder template.
+# NOTE (v1): The pipeline does not implement an FMCW waveform/DSP chain yet.
+# This file exists as a repository template only. Do not run via cli/run_case.py
+# unless you extend the schema + engines to support waveform processing.
+
+radar:
+  fc_hz: 7.7e10
+  tx_power_w: 0.5
+  prf_hz: 1.0e3
+  duty_cycle: 0.2
+
+antenna:
+  gain_tx_db: 25.0
+  gain_rx_db: 25.0
+
+receiver:
+  bw_hz: 2.0e6
+  nf_db: 6.0
+  temperature_k: 290.0
+
+target:
+  rcs_sqm: 1.0
+
+environment:
+  system_losses_db: 0.0
+
+# Waveform section intentionally omitted in v1 (no schema/support yet).
+geometry:
+  n_range_bins: 256
+  n_doppler_bins: 64
+  beams_per_scan: 10
+  n_cpi_per_dwell: 1

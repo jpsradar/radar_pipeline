@@ -1,0 +1,31 @@
+# configs/cases/sweep_example.yaml
+#
+# Deterministic grid sweep example (model-based engine).
+#
+# Run:
+#   python -m cli.run_sweep \
+#     --case configs/cases/demo_pd_noise.yaml \
+#     --sweep configs/cases/sweep_example.yaml \
+#     --out results/sweeps/demo_pd_noise__sweep.json
+#
+# Then generate a report:
+#   python -m cli.make_report \
+#     --sweep-json results/sweeps/demo_pd_noise__sweep.json \
+#     --out-dir results/reports/demo_pd_noise__sweep \
+#     --objective "far.per_second:min" \
+#     --objective "snr_db@10000:max"
+
+sweep:
+  parameters:
+    # Sweep PRF (affects CPI timing -> FAR via counts; and may affect Doppler bins if you tie it later)
+    - path: "radar.prf_hz"
+      values: [500, 1000, 2000, 4000]
+
+    # Sweep coherent/noncoherent integration length
+    - path: "detection.n_pulses"
+      values: [8, 16, 32, 64]
+
+    # Sweep reference window size (only impacts FAR if your case uses CFAR later; safe no-op for model_based)
+    # Keep it here as a forward-compatible sweep dimension.
+    - path: "geometry.n_range_bins"
+      values: [128, 256, 512]

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "antenna.schema.json",
+  "title": "Antenna Subschema (v1)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["gain_tx_db"],
+  "properties": {
+    "gain_tx_db": {
+      "type": "number",
+      "description": "Transmit antenna gain [dB]."
+    },
+    "gain_rx_db": {
+      "type": "number",
+      "description": "Receive antenna gain [dB]. If omitted, engines may default to gain_tx_db."
+    }
+  }
+}

@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "radar-pipeline"
+version = "0.1.0"
+description = "Model-based radar performance and trade-off analysis pipeline"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy==2.1.1",
+  "scipy==1.14.1",
+  "matplotlib==3.9.2",
+  "PyYAML==6.0.2",
+  "jsonschema==4.23.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==8.3.3",
+  "ruff==0.6.9",
+]
+
+[project.scripts]
+radar-run-case = "cli.run_case:main"
+radar-run-sweep = "cli.run_sweep:main"
+radar-sanity = "validation.sanity_checks:main"
+
+# ----------------------------
+# IMPORTANT: explicit package discovery
+# ----------------------------
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cli*", "core*", "reports*", "sweeps*", "validation*"]
+exclude = [
+  "results*",
+  "configs*",
+  "aux_scripts*",
+  "tests*",
+  "theory*",
+  "radar-antennas-propagation*",
+  "radar-dsp-pipeline*",
+]
+
+[tool.ruff]
+line-length = 100

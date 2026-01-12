@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "detection.schema.json",
+  "title": "Detection Subschema (v1)",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "pfa": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "exclusiveMaximum": 1,
+      "description": "Probability of false alarm (Pfa) in (0,1)."
+    },
+    "n_pulses": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Number of pulses integrated (coherent/noncoherent depending on integration)."
+    },
+    "integration": {
+      "type": "string",
+      "enum": ["noncoherent", "coherent"],
+      "description": "Integration mode."
+    }
+  }
+}
