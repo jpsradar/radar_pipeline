@@ -32,3 +32,68 @@ jobs:
       - name: Sanity checks
         run: |
           python -m validation.sanity_checks
+
+  model_vs_mc_gate:
+    name: model-vs-mc gate (Pd sanity)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install package (editable)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run model_based case (deterministic)
+        run: |
+          rm -rf results
+          make case ENGINE=model_based REPORT=0
+
+      - name: Run MC Pd validation (contract-driven)
+        run: |
+          python -m validation.monte_carlo.mc_pd_detector \
+            --case configs/cases/demo_pd_noise.yaml \
+            --n-trials 200000 \
+            --seed 123 \
+            --ci
+
+      - name: Gate on max Pd error
+        env:
+          PD_ABS_ERR_MAX_THR: "5e-4"
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          thr = float(os.environ.get("PD_ABS_ERR_MAX_THR", "5e-4"))
+
+          p = Path("results/validation/model_vs_mc_pd.json")
+          if not p.exists():
+              raise SystemExit(f"[ERROR] Missing artifact: {p}")
+
+          obj = json.loads(p.read_text(encoding="utf-8"))
+          disc = obj.get("result", {}).get("discrepancy", {})
+          if "pd_abs_err_max" not in disc:
+              raise SystemExit("[ERROR] results/validation/model_vs_mc_pd.json missing result.discrepancy.pd_abs_err_max")
+
+          val = float(disc["pd_abs_err_max"])
+          print(f"[INFO] pd_abs_err_max={val:.6g} (threshold={thr:.6g})")
+
+          if val > thr:
+              raise SystemExit(f"[ERROR] Gate failed: pd_abs_err_max={val:.6g} > {thr:.6g}")
+
+          print("[OK] Gate passed")
+          PY
+
+      - name: Upload validation artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-vs-mc-pd
+          path: results/validation/model_vs_mc_pd.json
