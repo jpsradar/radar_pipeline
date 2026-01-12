@@ -8,6 +8,13 @@
 # Output:
 #   results/cases/<run_name>/metrics.json
 
+execution:
+  mode: model_based
+
+assumptions:
+  - "Point target with deterministic RCS (no Swerling fluctuations)."
+  - "Thermal noise dominates; interference/jamming not modeled in this case."
+  - "Propagation is free-space; additional losses captured via environment.system_losses_db."
 
 radar:
   fc_hz: 10000000000.0
