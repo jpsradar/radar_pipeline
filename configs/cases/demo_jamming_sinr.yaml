@@ -1,0 +1,60 @@
+# configs/cases/demo_jamming_sinr.yaml
+#
+# Model-based SINR demo: add a noise-like jammer at receiver input.
+#
+# IMPORTANT (PyYAML parsing)
+# --------------------------
+# Use `e+` for positive scientific notation (e.g., 1.0e+10), otherwise PyYAML may
+# parse values like "1.0e10" as strings, which will fail JSON Schema validation.
+#
+# Run:
+#   python -m cli.run_case --case configs/cases/demo_jamming_sinr.yaml --engine auto --seed 123 --overwrite --strict
+
+execution:
+  mode: model_based
+
+assumptions:
+  - "Point target with deterministic RCS (no Swerling fluctuations)."
+  - "Thermal noise + additive noise-like interference at receiver input (no waveform-level jamming)."
+  - "Interference modeled as equivalent input power: Pj = JNR * N (constant vs range)."
+  - "Propagation is free-space; additional losses captured via environment.system_losses_db."
+
+radar:
+  fc_hz: 1.0e+10
+  tx_power_w: 1.0e+3
+  prf_hz: 1.0e+3
+  duty_cycle: 0.1
+
+antenna:
+  gain_tx_db: 30.0
+  gain_rx_db: 30.0
+
+receiver:
+  bw_hz: 5.0e+6
+  nf_db: 5.0
+  temperature_k: 290.0
+
+target:
+  rcs_sqm: 1.0
+
+environment:
+  system_losses_db: 0.0
+
+interference:
+  model: noise_like_jammer
+  jnr_db: 10.0
+  notes: "Toy jammer: +10 dB jammer-to-noise at receiver input."
+
+detection:
+  pfa: 1.0e-6
+  n_pulses: 16
+  integration: noncoherent
+
+metrics:
+  ranges_m: [10000.0, 15000.0, 20000.0, 30000.0, 40000.0]
+
+geometry:
+  n_range_bins: 256
+  n_doppler_bins: 64
+  beams_per_scan: 10
+  n_cpi_per_dwell: 1

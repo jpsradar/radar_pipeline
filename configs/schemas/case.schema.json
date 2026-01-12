@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "case.schema.json",
-  "title": "Radar Pipeline Case Schema (v3-fixed)",
-  "$comment": "Radar Pipeline Case Schema\n\nPurpose\n-------\nThis JSON Schema defines the strict, versioned contract for runnable radar pipeline case configurations.\n\nCase Types\n----------\nThis schema supports two mutually-exclusive top-level case types via oneOf:\n- performance_case: physical/statistical performance evaluation (model_based)\n- monte_carlo_case: empirical validation experiments (monte_carlo)\n\nStrictness\n----------\n- unevaluatedProperties=false at the top level\n- additionalProperties=false inside major objects\n\nUnits\n-----\nCanonical SI units are expected (Hz, W, m, s). Optional shorthands may be normalized by core/config/units.py.\n",
+  "title": "Radar Pipeline Case Schema (v5-execution+interference, self-contained)",
+  "$comment": "Radar Pipeline Case Schema\n\nPurpose\n-------\nDefines a strict, versioned contract for runnable radar pipeline cases.\n\nKey guarantees\n--------------\n- Explicit execution.mode to prevent CLI/config mismatches.\n- assumptions[] to document engineering modeling assumptions (publishable + honest).\n- Self-contained schema (no external $ref) to avoid resolver issues in jsonschema.\n\nCase families\n-------------\noneOf:\n- performance_case: model_based | signal_level\n- monte_carlo_case: monte_carlo\n\nStrictness\n----------\n- unevaluatedProperties=false at the top level\n- additionalProperties=false inside major objects\n",
   "type": "object",
   "oneOf": [
     { "$ref": "#/$defs/performance_case" },
@@ -10,16 +10,52 @@
   ],
   "unevaluatedProperties": false,
   "$defs": {
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["model_based", "signal_level", "monte_carlo"]
+        }
+      }
+    },
+
+    "assumptions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+
     "performance_case": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["radar", "antenna", "receiver", "target"],
+      "required": ["execution", "assumptions", "radar", "antenna", "receiver", "target"],
       "properties": {
+        "execution": {
+          "allOf": [
+            { "$ref": "#/$defs/execution" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["mode"],
+              "properties": {
+                "mode": { "type": "string", "enum": ["model_based", "signal_level"] }
+              }
+            }
+          ]
+        },
+        "assumptions": { "$ref": "#/$defs/assumptions" },
+
         "radar": { "$ref": "#/$defs/radar" },
         "antenna": { "$ref": "#/$defs/antenna" },
         "receiver": { "$ref": "#/$defs/receiver" },
         "target": { "$ref": "#/$defs/target" },
         "environment": { "$ref": "#/$defs/environment" },
+
+        "interference": { "$ref": "#/$defs/interference" },
+
         "detection": { "$ref": "#/$defs/detection" },
         "metrics": { "$ref": "#/$defs/metrics" },
         "geometry": { "$ref": "#/$defs/geometry" }
@@ -29,9 +65,43 @@
     "monte_carlo_case": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["monte_carlo"],
+      "required": ["execution", "assumptions", "monte_carlo"],
       "properties": {
+        "execution": {
+          "allOf": [
+            { "$ref": "#/$defs/execution" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["mode"],
+              "properties": {
+                "mode": { "type": "string", "const": "monte_carlo" }
+              }
+            }
+          ]
+        },
+        "assumptions": { "$ref": "#/$defs/assumptions" },
         "monte_carlo": { "$ref": "#/$defs/monte_carlo" }
+      }
+    },
+
+    "interference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["model"],
+      "properties": {
+        "model": {
+          "type": "string",
+          "enum": ["noise_like_jammer"]
+        },
+        "jnr_db": {
+          "type": "number",
+          "description": "Jammer-to-noise ratio at receiver input [dB]."
+        },
+        "notes": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     },
 
@@ -60,7 +130,10 @@
       "additionalProperties": false,
       "required": ["model"],
       "properties": {
-        "model": { "type": "string", "enum": ["exponential", "weibull", "lognormal", "k"] },
+        "model": {
+          "type": "string",
+          "enum": ["exponential", "weibull", "lognormal", "k"]
+        },
         "mean_power": { "type": "number", "exclusiveMinimum": 0 },
         "params": { "type": "object", "additionalProperties": true },
         "hetero": { "$ref": "#/$defs/hetero" }
