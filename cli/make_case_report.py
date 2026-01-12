@@ -9,6 +9,11 @@ Why this exists
 - This module provides a post-processing entry point when you already have a run directory
   and only want to regenerate the report (e.g., after changing report styling).
 
+Publishability requirement
+--------------------------
+This CLI must not leak absolute filesystem paths in stdout. Printed paths are rendered as
+"${PROJECT_ROOT}/..." when possible, otherwise redacted to basenames.
+
 Inputs
 ------
 --in   : Path to a case directory OR to a metrics.json file inside it.
@@ -102,8 +107,24 @@ def _resolve_inputs(inp: Path) -> tuple[Path, Path, Optional[Path]]:
     raise FileNotFoundError(f"Input path not found: {inp}")
 
 
+def _pretty_path(path: Path, project_root: Path) -> str:
+    """
+    Render a path without leaking absolute filesystem locations.
+
+    - If path is inside project_root: show as ${PROJECT_ROOT}/...
+    - Else: show only the basename.
+    """
+    try:
+        rel = path.resolve().relative_to(project_root.resolve())
+        return str(Path("${PROJECT_ROOT}") / rel)
+    except Exception:
+        return path.name
+
+
 def main() -> int:
     args = _parse_args()
+    project_root = Path.cwd().resolve()
+
     try:
         inp = Path(args.inp)
         case_dir, metrics_path, manifest_path = _resolve_inputs(inp)
@@ -116,15 +137,18 @@ def main() -> int:
             out_dir=out_dir,
             title=args.title,
         )
-        print(f"[OK] Wrote report: {paths.report_html}")
-        print(f"[OK] Wrote plots:  {paths.plots_dir}")
+
+        print(f"[OK] Wrote report: {_pretty_path(paths.report_html, project_root)}")
+        print(f"[OK] Wrote plots:  {_pretty_path(paths.plots_dir, project_root)}")
         return 0
 
     except (FileNotFoundError, ValueError) as exc:
-        print(f"[ERROR] {exc}")
+        msg = str(exc).replace(str(project_root), "${PROJECT_ROOT}")
+        print(f"[ERROR] {msg}")
         return 2
     except Exception as exc:
-        print(f"[ERROR] Unexpected exception: {exc}")
+        msg = str(exc).replace(str(project_root), "${PROJECT_ROOT}")
+        print(f"[ERROR] Unexpected exception: {msg}")
         return 3
 
 
