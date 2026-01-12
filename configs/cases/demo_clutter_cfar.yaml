@@ -1,19 +1,26 @@
-# configs/cases/demo_clutter_cfar_hetero.yaml
+# configs/cases/demo_clutter_cfar.yaml
 #
-# End-to-end Monte Carlo demo (heterogeneous background):
-# - Empirically evaluates CA-CFAR behavior when the background mean power varies
-#   across trials (non-homogeneous environment).
-# - Intended to expose CFAR brittleness under non-homogeneous clutter.
+# End-to-end Monte Carlo demo (homogeneous background):
+# - Empirically evaluates CA-CFAR behavior under a homogeneous exponential background.
+# - Intended to validate that measured Pfa matches the target within statistical uncertainty.
 #
 # Run:
-#   python -m cli.run_case --case configs/cases/demo_clutter_cfar_hetero.yaml --engine monte_carlo --seed 123
+#   python -m cli.run_case --case configs/cases/demo_clutter_cfar.yaml --engine auto --seed 123
 #
 # Output:
 #   results/cases/<run_name>/metrics.json
 #     - pfa_target, pfa_empirical
 #     - confidence intervals (normal_95, wilson_95)
 #     - alpha, n_ref
-#     - background metadata (including hetero segments)
+#     - background metadata
+
+execution:
+  mode: monte_carlo
+
+assumptions:
+  - "IID background samples in power domain (homogeneous exponential clutter)."
+  - "Detector operates on independent trials (no sliding-window correlation)."
+  - "Monte Carlo estimates are probabilistic; confidence intervals quantify uncertainty."
 
 monte_carlo:
   # Target probability of false alarm (per CUT / per trial depending on detector mode).
@@ -41,18 +48,5 @@ monte_carlo:
     # Optional distribution-specific parameters (unused by exponential)
     params: {}
 
-    # Heterogeneity hook: mean scaling multiplier applied to samples.
-    # Here: per-trial piecewise-constant mean scaling, defined compactly.
     hetero:
-      enabled: true
-      mode: multiply
-
-      # Compact, deterministic, reviewable heterogeneity definition.
-      # The sum of counts MUST equal n_trials.
-      mean_multiplier_segments:
-        - value: 0.7
-          count: 500000
-        - value: 1.0
-          count: 1000000
-        - value: 1.8
-          count: 500000
+      enabled: false
