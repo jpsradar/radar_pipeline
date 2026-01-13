@@ -5,87 +5,156 @@
   "$comment": "Radar Pipeline Case Schema\n\nPurpose\n-------\nDefines a strict, versioned contract for runnable radar pipeline cases.\n\nKey guarantees\n--------------\n- Explicit execution.mode to prevent CLI/config mismatches.\n- assumptions[] to document engineering modeling assumptions (publishable + honest).\n- Self-contained schema (no external $ref) to avoid resolver issues in jsonschema.\n\nCase families\n-------------\noneOf:\n- performance_case: model_based | signal_level\n- monte_carlo_case: monte_carlo\n\nStrictness\n----------\n- unevaluatedProperties=false at the top level\n- additionalProperties=false inside major objects\n",
   "type": "object",
   "oneOf": [
-    { "$ref": "#/$defs/performance_case" },
-    { "$ref": "#/$defs/monte_carlo_case" }
+    {
+      "$ref": "#/$defs/performance_case"
+    },
+    {
+      "$ref": "#/$defs/monte_carlo_case"
+    }
   ],
   "unevaluatedProperties": false,
   "$defs": {
     "execution": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["mode"],
+      "required": [
+        "mode"
+      ],
       "properties": {
         "mode": {
           "type": "string",
-          "enum": ["model_based", "signal_level", "monte_carlo"]
+          "enum": [
+            "model_based",
+            "signal_level",
+            "monte_carlo"
+          ]
         }
       }
     },
     "assumptions": {
       "type": "array",
       "minItems": 1,
-      "items": { "type": "string", "minLength": 1 }
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
     },
     "performance_case": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["execution", "assumptions", "radar", "antenna", "receiver", "target"],
+      "required": [
+        "execution",
+        "assumptions",
+        "radar",
+        "antenna",
+        "receiver",
+        "target"
+      ],
       "properties": {
         "execution": {
           "allOf": [
-            { "$ref": "#/$defs/execution" },
+            {
+              "$ref": "#/$defs/execution"
+            },
             {
               "type": "object",
               "additionalProperties": false,
-              "required": ["mode"],
+              "required": [
+                "mode"
+              ],
               "properties": {
-                "mode": { "type": "string", "enum": ["model_based", "signal_level"] }
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "model_based",
+                    "signal_level"
+                  ]
+                }
               }
             }
           ]
         },
-        "assumptions": { "$ref": "#/$defs/assumptions" },
-        "radar": { "$ref": "#/$defs/radar" },
-        "antenna": { "$ref": "#/$defs/antenna" },
-        "receiver": { "$ref": "#/$defs/receiver" },
-        "target": { "$ref": "#/$defs/target" },
-        "environment": { "$ref": "#/$defs/environment" },
-        "interference": { "$ref": "#/$defs/interference" },
-        "detection": { "$ref": "#/$defs/detection" },
-        "metrics": { "$ref": "#/$defs/metrics" },
-        "geometry": { "$ref": "#/$defs/geometry" }
+        "assumptions": {
+          "$ref": "#/$defs/assumptions"
+        },
+        "radar": {
+          "$ref": "#/$defs/radar"
+        },
+        "antenna": {
+          "$ref": "#/$defs/antenna"
+        },
+        "receiver": {
+          "$ref": "#/$defs/receiver"
+        },
+        "target": {
+          "$ref": "#/$defs/target"
+        },
+        "environment": {
+          "$ref": "#/$defs/environment"
+        },
+        "interference": {
+          "$ref": "#/$defs/interference"
+        },
+        "detection": {
+          "$ref": "#/$defs/detection"
+        },
+        "metrics": {
+          "$ref": "#/$defs/metrics"
+        },
+        "geometry": {
+          "$ref": "#/$defs/geometry"
+        }
       }
     },
     "monte_carlo_case": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["execution", "assumptions", "monte_carlo"],
+      "required": [
+        "execution",
+        "assumptions",
+        "monte_carlo"
+      ],
       "properties": {
         "execution": {
           "allOf": [
-            { "$ref": "#/$defs/execution" },
+            {
+              "$ref": "#/$defs/execution"
+            },
             {
               "type": "object",
               "additionalProperties": false,
-              "required": ["mode"],
+              "required": [
+                "mode"
+              ],
               "properties": {
-                "mode": { "type": "string", "const": "monte_carlo" }
+                "mode": {
+                  "type": "string",
+                  "const": "monte_carlo"
+                }
               }
             }
           ]
         },
-        "assumptions": { "$ref": "#/$defs/assumptions" },
-        "monte_carlo": { "$ref": "#/$defs/monte_carlo" }
+        "assumptions": {
+          "$ref": "#/$defs/assumptions"
+        },
+        "monte_carlo": {
+          "$ref": "#/$defs/monte_carlo"
+        }
       }
     },
     "interference": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["model"],
+      "required": [
+        "model"
+      ],
       "properties": {
         "model": {
           "type": "string",
-          "enum": ["noise_like_jammer"]
+          "enum": [
+            "noise_like_jammer"
+          ]
         },
         "jnr_db": {
           "type": "number",
@@ -100,62 +169,157 @@
     "monte_carlo": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["pfa", "n_trials", "detector", "background"],
+      "required": [
+        "pfa",
+        "n_trials",
+        "detector",
+        "background"
+      ],
       "properties": {
-        "seed": { "type": "integer" },
-        "pfa": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 },
-        "n_trials": { "type": "integer", "minimum": 1 },
+        "seed": {
+          "type": "integer"
+        },
+        "pfa": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 1
+        },
+        "n_trials": {
+          "type": "integer",
+          "minimum": 1
+        },
         "detector": {
           "type": "string",
-          "enum": ["ca_cfar_independent", "ca_cfar_1d_sliding"]
+          "enum": [
+            "ca_cfar_independent",
+            "ca_cfar_1d_sliding",
+            "os_cfar_independent"
+          ]
         },
-        "n_ref": { "type": "integer", "minimum": 1 },
-        "n_train": { "type": "integer", "minimum": 1 },
-        "n_guard": { "type": "integer", "minimum": 0 },
-        "n_cells": { "type": "integer", "minimum": 5 },
-        "background": { "$ref": "#/$defs/background" }
+        "n_ref": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "n_train": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "n_guard": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "n_cells": {
+          "type": "integer",
+          "minimum": 5
+        },
+        "rank_k": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "OS-CFAR: 1-based order-statistic rank (1=smallest, n_ref=largest). Use either rank_k or rank_frac."
+        },
+        "rank_frac": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "description": "OS-CFAR: fraction in (0,1] mapped to rank_k = ceil(rank_frac * n_ref). Use either rank_k or rank_frac."
+        },
+        "alpha": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Optional manual alpha override. If omitted, alpha may be computed or calibrated by the detector."
+        },
+        "alpha_calibration_n": {
+          "type": "integer",
+          "minimum": 10000,
+          "description": "OS-CFAR: number of trials used to calibrate alpha under a homogeneous background."
+        },
+        "alpha_calibration_seed": {
+          "type": "integer",
+          "description": "OS-CFAR: RNG seed used for alpha calibration (if performed)."
+        },
+        "background": {
+          "$ref": "#/$defs/background"
+        }
       }
     },
     "background": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["model"],
+      "required": [
+        "model"
+      ],
       "properties": {
         "model": {
           "type": "string",
-          "enum": ["exponential", "weibull", "lognormal", "k"]
+          "enum": [
+            "exponential",
+            "weibull",
+            "lognormal",
+            "k"
+          ]
         },
-        "mean_power": { "type": "number", "exclusiveMinimum": 0 },
-        "params": { "type": "object", "additionalProperties": true },
-        "hetero": { "$ref": "#/$defs/hetero" }
+        "mean_power": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "hetero": {
+          "$ref": "#/$defs/hetero"
+        }
       }
     },
     "hetero": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled"],
+      "required": [
+        "enabled"
+      ],
       "properties": {
-        "enabled": { "type": "boolean" },
-        "mode": { "type": "string", "enum": ["multiply"] },
-
+        "enabled": {
+          "type": "boolean"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "multiply"
+          ]
+        },
         "$comment": "Heterogeneity hook (v2): apply_to controls whether scaling is applied to CUT, REF, or both.\n- both: scale-invariant for CA-CFAR (should NOT break CFAR)\n- cut/ref: intentionally violates homogeneity -> CFAR should fail visibly",
         "apply_to": {
           "type": "string",
-          "enum": ["both", "cut", "ref"],
+          "enum": [
+            "both",
+            "cut",
+            "ref"
+          ],
           "default": "both"
         },
-
-        "mean_multiplier": { "type": "number", "exclusiveMinimum": 0 },
+        "mean_multiplier": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
         "mean_multiplier_segments": {
           "type": "array",
           "minItems": 1,
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["value", "count"],
+            "required": [
+              "value",
+              "count"
+            ],
             "properties": {
-              "value": { "type": "number", "exclusiveMinimum": 0 },
-              "count": { "type": "integer", "minimum": 1 }
+              "value": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1
+              }
             }
           }
         }
@@ -164,55 +328,110 @@
     "radar": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["fc_hz", "tx_power_w"],
+      "required": [
+        "fc_hz",
+        "tx_power_w"
+      ],
       "properties": {
-        "fc_hz": { "type": "number", "exclusiveMinimum": 0 },
-        "tx_power_w": { "type": "number", "exclusiveMinimum": 0 },
-        "prf_hz": { "type": "number", "exclusiveMinimum": 0 },
-        "duty_cycle": { "type": "number", "minimum": 0, "maximum": 1 }
+        "fc_hz": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "tx_power_w": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "prf_hz": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "duty_cycle": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
       }
     },
     "antenna": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["gain_tx_db"],
+      "required": [
+        "gain_tx_db"
+      ],
       "properties": {
-        "gain_tx_db": { "type": "number" },
-        "gain_rx_db": { "type": "number" }
+        "gain_tx_db": {
+          "type": "number"
+        },
+        "gain_rx_db": {
+          "type": "number"
+        }
       }
     },
     "receiver": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["bw_hz", "nf_db"],
+      "required": [
+        "bw_hz",
+        "nf_db"
+      ],
       "properties": {
-        "bw_hz": { "type": "number", "exclusiveMinimum": 0 },
-        "nf_db": { "type": "number", "minimum": 0 },
-        "temperature_k": { "type": "number", "exclusiveMinimum": 0 }
+        "bw_hz": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "nf_db": {
+          "type": "number",
+          "minimum": 0
+        },
+        "temperature_k": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
       }
     },
     "target": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["rcs_sqm"],
+      "required": [
+        "rcs_sqm"
+      ],
       "properties": {
-        "rcs_sqm": { "type": "number", "exclusiveMinimum": 0 }
+        "rcs_sqm": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
       }
     },
     "environment": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "system_losses_db": { "type": "number", "minimum": 0 }
+        "system_losses_db": {
+          "type": "number",
+          "minimum": 0
+        }
       }
     },
     "detection": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "pfa": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 },
-        "n_pulses": { "type": "integer", "minimum": 1 },
-        "integration": { "type": "string", "enum": ["noncoherent", "coherent"] }
+        "pfa": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 1
+        },
+        "n_pulses": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "integration": {
+          "type": "string",
+          "enum": [
+            "noncoherent",
+            "coherent"
+          ]
+        }
       }
     },
     "metrics": {
@@ -221,7 +440,10 @@
       "properties": {
         "ranges_m": {
           "type": "array",
-          "items": { "type": "number", "exclusiveMinimum": 0 }
+          "items": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          }
         }
       }
     },
@@ -229,10 +451,22 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "n_range_bins": { "type": "integer", "minimum": 1 },
-        "n_doppler_bins": { "type": "integer", "minimum": 1 },
-        "beams_per_scan": { "type": "integer", "minimum": 1 },
-        "n_cpi_per_dwell": { "type": "integer", "minimum": 1 }
+        "n_range_bins": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "n_doppler_bins": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "beams_per_scan": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "n_cpi_per_dwell": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     }
   }
