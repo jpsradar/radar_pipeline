@@ -1,0 +1,68 @@
+# configs/cases/demo_antenna_vs_coverage_low_gain.yaml
+#
+# Phase 2 trade-off demo (coverage/revisit vs link budget):
+# LOW antenna gain => faster scan (better revisit) but worse SNR/Pd.
+#
+# Engineering story
+# -----------------
+# In many radars, narrower beams provide more antenna gain (higher SNR),
+# but require more beams to cover the same angular region, increasing scan time.
+# This case represents the "coverage-first" configuration:
+# - fewer beams per scan => shorter scan time (better revisit)
+# - lower gain => lower SNR => lower Pd at the same Pfa
+#
+# Run:
+#   python -m cli.run_case --case configs/cases/demo_antenna_vs_coverage_low_gain.yaml --engine auto --seed 123 --overwrite --strict
+#
+# Expected direction:
+#   - scan_time_s relatively small (coverage/revisit better)
+#   - snr_db and Pd lower than the high-gain companion case
+
+execution:
+  mode: model_based
+
+assumptions:
+  - "Monostatic radar equation with free-space propagation."
+  - "Point target with deterministic RCS (no Swerling fluctuations)."
+  - "Thermal noise dominates; no explicit interference/jamming in this case."
+  - "Coverage cost is represented by beams_per_scan and dwell/cpi timing (scan_time_s)."
+
+radar:
+  fc_hz: 10000000000.0
+  tx_power_w: 1000.0
+  prf_hz: 1000.0
+  duty_cycle: 0.1
+
+antenna:
+  # Low-gain mode (coverage-first).
+  # Chosen to be ~10 dB below the baseline 30 dB case per channel:
+  # 25 dB Tx and 25 dB Rx => -10 dB total compared to 30/30.
+  gain_tx_db: 25.0
+  gain_rx_db: 25.0
+
+receiver:
+  bw_hz: 5000000.0
+  nf_db: 5.0
+  temperature_k: 290.0
+
+target:
+  rcs_sqm: 1.0
+
+environment:
+  system_losses_db: 0.0
+
+detection:
+  pfa: 1.0e-6
+  n_pulses: 16
+  integration: noncoherent
+
+metrics:
+  # Keep the same first range point as the other performance demos to make comparisons easy.
+  ranges_m: [10000.0, 15000.0, 20000.0, 30000.0, 40000.0]
+
+geometry:
+  # Coverage proxy: fewer beams => shorter scan time => better revisit.
+  n_range_bins: 256
+  n_doppler_bins: 64
+  beams_per_scan: 8
+  n_cpi_per_dwell: 1
