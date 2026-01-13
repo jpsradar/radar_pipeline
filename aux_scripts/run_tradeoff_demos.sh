@@ -24,9 +24,11 @@ set -euo pipefail
 # 2) Antenna gain vs coverage / revisit trade-off (model_based cases)
 # 3) CFAR robustness trade-off (monte_carlo cases)
 # 4) Detector vs environment trade-off (CA vs OS)
-# 5) Pd under noise with target fluctuations (Swerling 0–4)
+# 5) Pd under noise with target fluctuations (Swerling 0–4), including heterogeneity variants
 #    - Runs any committed configs matching:
 #        configs/cases/demo_pd_noise_swerling*.yaml
+#        configs/cases/demo_pd_noise_swerling*_both.yaml
+#        configs/cases/demo_pd_noise_swerling*_cut.yaml
 #    - Writes comparison artifacts (CSV+JSON) under results/comparisons/
 #
 # Reproducibility + safety
@@ -90,6 +92,26 @@ run_case_if_exists() {
   else
     echo "[SKIP] Missing config: ${case_path}"
   fi
+}
+
+# -----------------------------------------------------------------------------
+# Helper: list configs safely + deterministically (works on macOS bash 3.2 too)
+# -----------------------------------------------------------------------------
+list_case_paths() {
+  # Usage: list_case_paths "<glob_pattern>"
+  # Example: list_case_paths "demo_pd_noise_swerling*_both.yaml"
+  local pattern="$1"
+  python - <<'PY'
+from __future__ import annotations
+from pathlib import Path
+import os, sys
+
+pattern = os.environ.get("PATTERN")
+base = Path("configs/cases")
+paths = sorted(p.as_posix() for p in base.glob(pattern))
+for p in paths:
+    print(p)
+PY
 }
 
 ###############################################################################
@@ -223,27 +245,56 @@ PY
 echo
 
 ###############################################################################
-# 5) Pd under noise with target fluctuations (Swerling 0–4)
+# 5) Pd under noise with target fluctuations (Swerling 0–4) + heterogeneity variants
 ###############################################################################
-echo "[5/5] Pd under noise with target fluctuations (Swerling 0–4)"
+echo "[5/6] Pd under noise with target fluctuations (Swerling 0–4) + heterogeneity"
 
+# Clean up any prior Swerling runs for this seed (legacy + variants)
 cleanup_dirs "results/cases" "demo_pd_noise_swerling*__seed${SEED}__cfg*"
-cleanup_dirs "results/comparisons" "demo_pd_noise_swerling__seed${SEED}"
+cleanup_dirs "results/cases" "demo_pd_mc_swerling*__seed${SEED}__cfg*"
+cleanup_dirs "results/comparisons" "demo_pd_noise_swerling*__seed${SEED}"
+cleanup_dirs "results/comparisons" "demo_pd_mc_swerling*__seed${SEED}"
 
-# Run every committed Pd/Swerling case matching the pattern (sorted for determinism).
-mapfile -t SWERLING_CASES < <(
-  find "configs/cases" -maxdepth 1 -type f -name "demo_pd_noise_swerling*.yaml" 2>/dev/null | sort
-)
+# -----------------------------------------------------------------------------
+# Inner helper: run a swerling family + write comparison artifacts
+# -----------------------------------------------------------------------------
+run_swerling_family() {
+  # Usage: run_swerling_family "<glob_pattern>" "<comparison_tag>"
+  # Example:
+  #   run_swerling_family "demo_pd_mc_swerling*_both.yaml" "demo_pd_mc_swerling_both"
+  local pattern="$1"
+  local tag="$2"
 
-if [[ "${#SWERLING_CASES[@]}" -eq 0 ]]; then
-  echo "[WARN] No Swerling Pd configs found (expected pattern: configs/cases/demo_pd_noise_swerling*.yaml)"
-else
-  for f in "${SWERLING_CASES[@]}"; do
+  echo "  -> Running Swerling family: pattern=${pattern} tag=${tag}"
+
+  # Collect configs deterministically using python glob (portable + zsh-safe)
+  local cfg_list
+  cfg_list="$(PATTERN="${pattern}" python - <<'PY'
+from __future__ import annotations
+import os
+from pathlib import Path
+
+pat = os.environ["PATTERN"]
+root = Path.cwd() / "configs/cases"
+paths = sorted(root.glob(pat))
+for p in paths:
+    print(str(p))
+PY
+)"
+
+  if [[ -z "${cfg_list}" ]]; then
+    echo "  [WARN] No configs found for pattern: configs/cases/${pattern}"
+    return 0
+  fi
+
+  # Run all configs in this family
+  while IFS= read -r f; do
+    [[ -z "${f}" ]] && continue
     run_case_if_exists "${f}"
-  done
+  done <<< "${cfg_list}"
 
-  # Build a comparison table from the newest metrics of each swerling case.
-  python - <<'PY'
+  # Build comparison artifacts from newest metrics of each case stem.
+  TAG="${tag}" PATTERN="${pattern}" python - <<'PY'
 from __future__ import annotations
 
 import csv
@@ -251,13 +302,15 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 ROOT = Path.cwd()
 SEED = int(os.environ.get("SEED", "123"))
+TAG = os.environ["TAG"]
+PATTERN = os.environ["PATTERN"]
 
 CASE_DIR = ROOT / "results/cases"
-OUT_DIR = ROOT / "results/comparisons" / f"demo_pd_noise_swerling__seed{SEED}"
+OUT_DIR = ROOT / "results/comparisons" / f"{TAG}__seed{SEED}"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 RX_SW = re.compile(r"(swerling[0-4])", re.IGNORECASE)
@@ -266,35 +319,53 @@ def load_json(p: Path) -> dict:
     return json.loads(p.read_text(encoding="utf-8"))
 
 def newest_metrics_for_case_stem(case_stem: str) -> Optional[Path]:
-    pat = f"{case_stem}__model_based__seed{SEED}__cfg*/metrics.json"
+    # Works for model_based and monte_carlo (and any future engine naming)
+    pat = f"{case_stem}__*__seed{SEED}__cfg*/metrics.json"
     c = sorted(CASE_DIR.glob(pat))
     return c[-1] if c else None
 
-def extract_pd(metrics: Dict[str, Any]) -> Tuple[List[float], List[float]]:
+def extract_pd_any(metrics: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Supports:
+      - model_based: detection.pd is a list aligned with metrics.ranges_m
+      - monte_carlo: pd_empirical is a scalar
+    """
+    out: Dict[str, Any] = {
+        "pd_mode": None,
+        "pd_empirical": None,
+        "pd_curve": None,
+        "ranges_m": None,
+    }
+
+    if "pd_empirical" in metrics:
+        try:
+            out["pd_mode"] = "mc_scalar"
+            out["pd_empirical"] = float(metrics["pd_empirical"])
+        except Exception:
+            pass
+        return out
+
     det = metrics.get("detection", {}) or {}
     pd = det.get("pd", None)
     ranges = (metrics.get("metrics", {}) or {}).get("ranges_m", None)
-
-    # In this repo, ranges are usually in metrics.ranges_m, but we stay defensive.
     if ranges is None:
         ranges = metrics.get("ranges_m", None)
 
-    if not isinstance(pd, list) or not pd:
-        return ([], [])
-    if not isinstance(ranges, list) or len(ranges) != len(pd):
-        # If ranges missing/mismatched, still return pd; ranges empty => no range_at_pd.
-        return ([float(x) for x in pd], [])
-    return ([float(x) for x in pd], [float(r) for r in ranges])
+    if isinstance(pd, list) and pd:
+        out["pd_mode"] = "curve"
+        out["pd_curve"] = [float(x) for x in pd]
+        if isinstance(ranges, list) and len(ranges) == len(pd):
+            out["ranges_m"] = [float(r) for r in ranges]
+    return out
 
-def range_at_pd(ranges_m: List[float], pd: List[float], thr: float) -> Optional[float]:
+def range_at_pd(ranges_m, pd, thr: float):
     if not ranges_m or not pd or len(ranges_m) != len(pd):
         return None
-    # Define "range_at_pd" as the *max* range where Pd >= thr (engineering-friendly).
     ok = [r for r, p in zip(ranges_m, pd) if p >= thr]
     return max(ok) if ok else None
 
-# Discover case stems from committed configs (stable intent)
-cfgs = sorted((ROOT / "configs/cases").glob("demo_pd_noise_swerling*.yaml"))
+# Discover case stems from configs (this family)
+cfgs = sorted((ROOT / "configs/cases").glob(PATTERN))
 case_stems = [p.stem for p in cfgs]
 
 rows: List[Dict[str, Any]] = []
@@ -307,43 +378,46 @@ for stem in case_stems:
         continue
 
     m = load_json(mp)
-    pd, ranges = extract_pd(m)
+    pdinfo = extract_pd_any(m)
 
-    # Infer fluctuation from case stem (demo_pd_noise_swerlingX)
     m_sw = RX_SW.search(stem)
     fluct = (m_sw.group(1).lower() if m_sw else "unknown")
 
-    pd0 = (pd[0] if pd else None)
-    row = {
+    pd_curve = pdinfo.get("pd_curve")
+    ranges_m = pdinfo.get("ranges_m")
+
+    rows.append({
         "case": stem,
         "fluctuation": fluct,
-        "pd_at_first_range": pd0,
-        "min_pd": (min(pd) if pd else None),
-        "max_pd": (max(pd) if pd else None),
-        "range_at_pd_50_m": range_at_pd(ranges, pd, 0.50),
-        "range_at_pd_80_m": range_at_pd(ranges, pd, 0.80),
-        "range_at_pd_90_m": range_at_pd(ranges, pd, 0.90),
+        "pd_mode": pdinfo.get("pd_mode"),
+        "pd_empirical": pdinfo.get("pd_empirical"),
+        "pd_at_first_range": (pd_curve[0] if isinstance(pd_curve, list) and pd_curve else None),
+        "min_pd": (min(pd_curve) if isinstance(pd_curve, list) and pd_curve else None),
+        "max_pd": (max(pd_curve) if isinstance(pd_curve, list) and pd_curve else None),
+        "range_at_pd_50_m": range_at_pd(ranges_m, pd_curve, 0.50),
+        "range_at_pd_80_m": range_at_pd(ranges_m, pd_curve, 0.80),
+        "range_at_pd_90_m": range_at_pd(ranges_m, pd_curve, 0.90),
         "run_metrics": str(mp.parent),
-    }
-    rows.append(row)
+    })
 
-# Write artifacts
 csv_path = OUT_DIR / "comparison.csv"
 json_path = OUT_DIR / "comparison.json"
 
+fieldnames = [
+    "case",
+    "fluctuation",
+    "pd_mode",
+    "pd_empirical",
+    "pd_at_first_range",
+    "min_pd",
+    "max_pd",
+    "range_at_pd_50_m",
+    "range_at_pd_80_m",
+    "range_at_pd_90_m",
+    "run_metrics",
+]
+
 if rows:
-    # Stable column order
-    fieldnames = [
-        "case",
-        "fluctuation",
-        "pd_at_first_range",
-        "min_pd",
-        "max_pd",
-        "range_at_pd_50_m",
-        "range_at_pd_80_m",
-        "range_at_pd_90_m",
-        "run_metrics",
-    ]
     with csv_path.open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
@@ -351,6 +425,8 @@ if rows:
 
 payload = {
     "seed": SEED,
+    "tag": TAG,
+    "pattern": PATTERN,
     "rows": rows,
     "missing_cases": missing,
 }
@@ -363,6 +439,50 @@ print(f"  {pretty / 'comparison.json'}")
 if missing:
     print("[WARN] Missing runs for:", ", ".join(missing))
 PY
+}
+
+# Run legacy model_based swerling cases (backward compatibility)
+run_swerling_family "demo_pd_noise_swerling*.yaml" "demo_pd_noise_swerling"
+
+# Run mandatory heterogeneity variants (your new configs: demo_pd_mc_*)
+run_swerling_family "demo_pd_mc_swerling*_both.yaml" "demo_pd_mc_swerling_both"
+run_swerling_family "demo_pd_mc_swerling*_cut.yaml"  "demo_pd_mc_swerling_cut"
+
+echo
+
+###############################################################################
+# 6) Pd vs SNR: analytic model vs Monte Carlo (Swerling 0–4) + CI + plot
+###############################################################################
+echo "[6/6] Pd vs SNR: model vs Monte Carlo (Swerling 0–4) + CI + plot"
+
+# Clean up comparison artifacts for this seed (model-vs-mc falsification layer)
+cleanup_dirs "results/comparisons" "demo_pd_model_vs_mc_*__seed${SEED}"
+
+# Collect configs deterministically (portable + zsh-safe)
+PD_MODEL_CFGS="$(python - <<'PY'
+from __future__ import annotations
+from pathlib import Path
+
+root = Path.cwd() / "configs/cases"
+paths = sorted(root.glob("demo_pd_model_vs_mc_swerling*.yaml"))
+for p in paths:
+    print(str(p))
+PY
+)"
+
+if [[ -z "${PD_MODEL_CFGS}" ]]; then
+  echo "  [WARN] No configs found: configs/cases/demo_pd_model_vs_mc_swerling*.yaml"
+else
+  # Run the comparison script once per swerling case YAML.
+  # The script writes:
+  #   results/comparisons/demo_pd_model_vs_mc_<swerling>__seed${SEED}/comparison.{csv,json,png}
+  while IFS= read -r f; do
+    [[ -z "${f}" ]] && continue
+    python aux_scripts/compare_pd_model_vs_mc.py \
+      --case "${f}" \
+      --seed "${SEED}" \
+      ${OVERWRITE_FLAG}
+  done <<< "${PD_MODEL_CFGS}"
 fi
 
 echo

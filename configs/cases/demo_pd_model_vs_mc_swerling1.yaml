@@ -1,0 +1,49 @@
+# Pd vs SNR: model vs Monte Carlo (Swerling-1, noncoherent integration, CA-CFAR independent)
+#
+# Intent:
+# - Use Monte Carlo as empirical reference (with Wilson CI).
+# - Compare against a simple model:
+#     threshold uses E[mean(ref)] instead of random ref mean
+#     CUT = sum(bg) + N*mean_sig (deterministic additive power for swerling1)
+#     bg per pulse is exponential => sum(bg) is Erlang/Gamma with integer shape N
+#
+# Output artifacts are written by aux_scripts/compare_pd_model_vs_mc.py
+
+execution:
+  mode: monte_carlo
+
+assumptions:
+  - "Independent-trials CA-CFAR (CUT and refs iid per trial)."
+  - "Power-domain noncoherent integration (sum of per-pulse powers)."
+  - "Background is exponential power with mean_power as scale."
+  - "Swerling-0: deterministic additive target power per pulse (no fluctuation)."
+  - "Model uses expected reference mean (not the random sample mean) as the threshold scale."
+
+monte_carlo:
+  task: pd
+
+  # Detector contract
+  detector: ca_cfar_independent
+  pfa: 1.0e-6
+  n_ref: 32
+
+  # Monte Carlo effort (per SNR point)
+  n_trials: 200000
+
+  # Background power model (mean_power is required for Pd task)
+  background:
+    model: exponential
+    mean_power: 1.0
+    hetero:
+      enabled: false
+
+  # Pd task config (snr_db is swept by the comparison script)
+  pd:
+    snr_db: 0.0          # placeholder; overridden by script sweep
+    n_pulses: 16
+    integration: noncoherent
+    swerling: swerling1
+
+sweep:
+  # SNR sweep grid (dB)
+  snr_db_grid: [-20, -18, -16, -14, -12, -10, -8, -6, -4, -2, 0, 2, 4, 6, 8, 10, 12]
