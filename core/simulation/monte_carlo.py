@@ -3,51 +3,61 @@ core/simulation/monte_carlo.py
 
 Monte Carlo simulation utilities for radar performance validation.
 
-What this module does
----------------------
-Provides reproducible Monte Carlo runners to estimate:
-- Empirical Pfa for a chosen detector (e.g., CA-CFAR) under specified background models
-- Confidence intervals for report-ready validation
+Purpose
+-------
+This module provides reproducible Monte Carlo estimators for false-alarm behavior
+(Pfa / FAR surrogates) under different background power statistics and detector choices.
 
-Primary use case (LinkedIn / notebook demo)
--------------------------------------------
-- Show that CA-CFAR maintains target Pfa under:
-  (a) homogeneous exponential noise
-  (b) heterogeneous clutter (mean scaling map / segments)
-- Show CFAR brittleness under non-homogeneous backgrounds
+It exists to make "model vs experiment" arguments defensible:
+- We do not only compute theoretical CFAR scalings.
+- We also estimate empirical Pfa and confidence intervals, producing artifacts that
+  can be shown in reports and compared across commits (regression friendly).
 
-Inputs (cfg dict - recommended fields)
---------------------------------------
-cfg["monte_carlo"]:
-  - n_trials: int (number of trials)
-  - pfa: float (target false alarm probability)
-  - detector: "ca_cfar_independent" | "ca_cfar_1d_sliding"
-  - n_ref: int (for independent CA-CFAR)
-  - n_train: int, n_guard: int, n_cells: int (for 1d sliding CA-CFAR)
-  - background:
-      - model: "exponential" | "weibull" | "lognormal" | "k"
-      - params: dict (model-specific parameters)
-      - mean_power: float (optional; used by exponential/k helper paths)
-      - hetero:
-          - enabled: bool
-          - mode: "multiply" (v1)
-          - mean_multiplier: float (scalar scale)
-          - mean_multiplier_segments: list[{value: float, count: int}] (compact per-trial pattern)
+Key behaviors (v2)
+------------------
+1) Detector choices (current)
+   - ca_cfar_independent:
+       Independent trials. Each trial draws:
+         CUT power ~ background distribution
+         Nref reference powers ~ background distribution
+       Then tests: CUT > alpha * mean(ref)
+       This isolates the CA-CFAR math from sliding-window correlation effects.
+   - ca_cfar_1d_sliding:
+       Sliding-window CA-CFAR over a 1D power line. More realistic but correlated.
+
+2) Background models (power domain)
+   - exponential, weibull, lognormal, k
+   All are interpreted as distributions of POWER (nonnegative scalars).
+
+3) Heterogeneity (IMPORTANT CONCEPT)
+   Heterogeneity is a mechanism to intentionally violate CFAR assumptions.
+
+   In v1, heterogeneity was implemented as a multiplicative scaling applied to BOTH
+   CUT and reference samples in each trial. This is scale-invariant for CA-CFAR and
+   therefore DOES NOT break CFAR (it should not change Pfa).
+
+   In v2, we add an explicit control:
+     background.hetero.apply_to: "both" | "cut" | "ref"
+
+   - "both" (default, backward compatible): scale CUT and references together
+     -> preserves scale invariance -> CFAR still holds.
+   - "cut": scale CUT only (references unchanged)
+     -> violates homogeneity assumption -> CFAR breaks (Pfa drifts).
+   - "ref": scale references only (CUT unchanged)
+     -> also violates assumptions -> CFAR breaks.
+
+   For ca_cfar_1d_sliding, "cut/ref" separation is not meaningful because CUT and
+   references come from the same line sample set; we therefore only allow "both".
 
 Outputs
 -------
-A metrics dict suitable to be written as metrics.json:
+Returns a dict suitable to be written as metrics.json. It includes:
 - pfa_target, pfa_empirical
-- n_trials, n_false_alarms
-- confidence intervals (normal approx and Wilson score)
+- counts, confidence intervals
 - detector metadata (alpha, n_ref / n_train/n_guard)
-- background metadata (model name, parameters, heterogeneity)
+- background metadata (model name, parameters, hetero definition)
+- validity contract (top-level "validity") to document model assumptions/limits
 
-CLI usage
----------
-Called by cli/run_case.py when engine == "monte_carlo" or when auto-detected.
-Example:
-    python -m cli.run_case --case configs/cases/demo_clutter_cfar.yaml --seed 123
 """
 
 from __future__ import annotations
@@ -84,7 +94,7 @@ def run_pfa_monte_carlo(cfg: Dict[str, Any], seed: Optional[int] = None) -> Dict
     Parameters
     ----------
     cfg : dict
-        Case configuration dictionary.
+        Case configuration dictionary (validated upstream by schema/loader).
     seed : int | None
         RNG seed for reproducibility. If cfg["monte_carlo"]["seed"] exists, it overrides this.
 
@@ -106,13 +116,21 @@ def run_pfa_monte_carlo(cfg: Dict[str, Any], seed: Optional[int] = None) -> Dict
 
     dist = _build_background_distribution(bg)
 
-    # --- Heterogeneity parsing (professional: compact patterns supported) ---
+    # --- Heterogeneity parsing (v2: apply_to support) ---
     hetero = bg.get("hetero", None)
+
     mean_multiplier: Optional[Union[float, np.ndarray]] = None
+    apply_to = "both"  # default for backward compatibility
+
     if isinstance(hetero, dict) and bool(hetero.get("enabled", False)):
         mode = str(hetero.get("mode", "multiply")).lower().strip()
         if mode != "multiply":
             raise MonteCarloError("background.hetero.mode must be 'multiply' (v1)")
+
+        # v2 extension: where to apply the scaling (cut/ref/both)
+        apply_to = str(hetero.get("apply_to", "both")).lower().strip()
+        if apply_to not in {"both", "cut", "ref"}:
+            raise MonteCarloError("background.hetero.apply_to must be one of: both | cut | ref")
 
         if "mean_multiplier_segments" in hetero:
             mean_multiplier = _expand_mean_multiplier_segments(
@@ -126,6 +144,7 @@ def run_pfa_monte_carlo(cfg: Dict[str, Any], seed: Optional[int] = None) -> Dict
                 "background.hetero.enabled=true requires mean_multiplier or mean_multiplier_segments"
             )
 
+    # Detector routing
     if detector == "ca_cfar_independent":
         n_ref = _require_int(mc, "n_ref", min_value=1, default=32)
         metrics = _run_independent_ca_cfar_pfa(
@@ -135,10 +154,18 @@ def run_pfa_monte_carlo(cfg: Dict[str, Any], seed: Optional[int] = None) -> Dict
             n_trials=n_trials,
             n_ref=n_ref,
             mean_multiplier=mean_multiplier,
+            hetero_apply_to=apply_to,
         )
         return _decorate_metrics(metrics, cfg=cfg)
 
     if detector == "ca_cfar_1d_sliding":
+        # For sliding mode, apply_to separation is not meaningful: all samples live on one line.
+        # We accept only "both" to avoid implying behavior we cannot implement.
+        if apply_to != "both":
+            raise MonteCarloError(
+                "background.hetero.apply_to must be 'both' for detector=ca_cfar_1d_sliding"
+            )
+
         n_train = _require_int(mc, "n_train", min_value=1, default=16)
         n_guard = _require_int(mc, "n_guard", min_value=0, default=0)
         n_cells = _require_int(mc, "n_cells", min_value=(2 * n_train + 2 * n_guard + 3), default=512)
@@ -170,6 +197,7 @@ def _run_independent_ca_cfar_pfa(
     n_trials: int,
     n_ref: int,
     mean_multiplier: Optional[Union[float, np.ndarray]],
+    hetero_apply_to: str,
 ) -> Dict[str, Any]:
     """
     Independent-trial CA-CFAR Pfa estimation.
@@ -179,23 +207,32 @@ def _run_independent_ca_cfar_pfa(
     - Nref reference powers ~ background distribution
     Then tests: CUT > alpha * mean(ref)
 
-    This isolates CA-CFAR thresholding math from window correlation effects.
+    Heterogeneity semantics
+    ----------------------
+    If mean_multiplier is provided, it is applied according to hetero_apply_to:
+
+    - both (default): scale CUT and refs together (scale invariant for CA-CFAR)
+    - cut:  scale CUT only  (violates homogeneity assumption -> CFAR breaks)
+    - ref:  scale refs only  (violates homogeneity assumption -> CFAR breaks)
     """
     alpha = ca_cfar_alpha(pfa=pfa, n_ref=n_ref)
 
-    x_cut = dist.sample(rng, size=n_trials)                 # shape: (n_trials,)
-    x_ref = dist.sample(rng, size=(n_trials, n_ref))        # shape: (n_trials, n_ref)
+    x_cut = dist.sample(rng, size=n_trials)          # shape: (n_trials,)
+    x_ref = dist.sample(rng, size=(n_trials, n_ref)) # shape: (n_trials, n_ref)
 
     if mean_multiplier is not None:
-        # Apply heterogeneity as multiplicative mean scaling.
-        # - scalar: global scale
-        # - vector length n_trials: per-trial scale; broadcast to refs
         m = np.asarray(mean_multiplier, dtype=float)
-        x_cut = apply_mean_scaling(x_cut, m)
-        if m.ndim == 1 and m.size == n_trials:
-            x_ref = apply_mean_scaling(x_ref, m.reshape(-1, 1))
-        else:
-            x_ref = apply_mean_scaling(x_ref, m)
+
+        # CUT scaling
+        if hetero_apply_to in {"both", "cut"}:
+            x_cut = apply_mean_scaling(x_cut, m)
+
+        # REF scaling
+        if hetero_apply_to in {"both", "ref"}:
+            if m.ndim == 1 and m.size == n_trials:
+                x_ref = apply_mean_scaling(x_ref, m.reshape(-1, 1))
+            else:
+                x_ref = apply_mean_scaling(x_ref, m)
 
     z = np.mean(x_ref, axis=1)
     thr = alpha * z
@@ -473,7 +510,7 @@ def _decorate_metrics(metrics: Dict[str, Any], *, cfg: Dict[str, Any]) -> Dict[s
     metrics_out["validity"] = validity_for_monte_carlo(cfg, detector=detector)
 
     return metrics_out
-        
+
 
 # ---------------------------------------------------------------------
 # Config parsing helpers

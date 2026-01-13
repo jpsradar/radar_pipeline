@@ -1,41 +1,68 @@
 # configs/cases/demo_clutter_cfar_hetero.yaml
 #
-# End-to-end Monte Carlo demo (heterogeneous background):
-# - Empirically evaluates CA-CFAR behavior when the background mean power varies
-#   across trials (non-homogeneous environment).
-# - Intended to expose CFAR brittleness under non-homogeneous clutter.
+# End-to-end Monte Carlo demo (heterogeneous background that BREAKS CA-CFAR on purpose).
+#
+# Why this exists (Phase 2 trade-off)
+# -----------------------------------
+# CA-CFAR has a famous property: it is scale-invariant if the CUT and the reference
+# window are scaled together. That means:
+#
+#   If you multiply BOTH:
+#     - CUT samples, and
+#     - Reference samples
+#   by the same factor (per trial),
+#   then CA-CFAR should keep the same Pfa (it should NOT "fail").
+#
+# Therefore, a heterogeneity mechanism that scales (CUT + REF) together is NOT a
+# convincing "CFAR brittleness" demo.
+#
+# What we do here
+# ---------------
+# To expose brittleness, we violate the homogeneity assumption explicitly:
+# - We scale ONLY the CUT ("apply_to: cut")
+# - We leave the reference samples unchanged
+#
+# This emulates a clutter edge / non-homogeneous background where the CUT statistics
+# differ from the reference window statistics, which is a known CFAR failure mode.
+#
+# Expected outcome
+# ----------------
+# - HOMO case (demo_clutter_cfar.yaml):
+#     empirical Pfa ≈ target Pfa (target should lie within Wilson 95% CI)
+# - HETERO case (this file):
+#     empirical Pfa deviates strongly; target Pfa should fall OUTSIDE Wilson 95% CI
 #
 # Run:
-#   python -m cli.run_case --case configs/cases/demo_clutter_cfar_hetero.yaml --engine auto --seed 123
+#   python -m cli.run_case --case configs/cases/demo_clutter_cfar_hetero.yaml --engine auto --seed 123 --overwrite --strict
 #
 # Output:
 #   results/cases/<run_name>/metrics.json
 #     - pfa_target, pfa_empirical
 #     - confidence intervals (normal_95, wilson_95)
 #     - alpha, n_ref
-#     - background metadata (including hetero segments)
+#     - background metadata (including hetero.apply_to + hetero segments)
+#     - validity contract
 
 execution:
   mode: monte_carlo
 
 assumptions:
-  - "Background samples are IID within each segment, but the mean power is piecewise-constant across segments."
-  - "Detector operates on independent trials (no sliding-window correlation)."
+  - "Background samples are IID within a trial."
+  - "Non-homogeneity is introduced by scaling ONLY the CUT distribution (clutter edge surrogate)."
+  - "Detector uses independent trials (no sliding-window correlation)."
   - "Monte Carlo estimates are probabilistic; confidence intervals quantify uncertainty."
 
 monte_carlo:
-  # Target probability of false alarm (per CUT / per trial depending on detector mode).
+  # Target probability of false alarm (per CUT / per trial in independent mode).
   pfa: 1.0e-3
 
-  # Independent trials (vectorized) keeps runtime reasonable and statistics stable.
+  # Large trial count makes the failure unambiguous (tight Wilson CI).
   n_trials: 2000000
 
-  # Supported modes in core/simulation/monte_carlo.py:
-  # - ca_cfar_independent: independent CUT + Nref references per trial (best to validate CFAR math)
-  # - ca_cfar_1d_sliding: sliding window on a 1D line (more "realistic" but correlated)
+  # Independent mode isolates CA-CFAR thresholding math from window-overlap correlation.
   detector: ca_cfar_independent
 
-  # For ca_cfar_independent
+  # For ca_cfar_independent: number of reference cells
   n_ref: 32
 
   background:
@@ -43,23 +70,28 @@ monte_carlo:
     # Supported: exponential | weibull | lognormal | k
     model: exponential
 
-    # Mean power (scale) for exponential background.
+    # Mean power (scale) for exponential background (references stay at this mean).
     mean_power: 1.0
 
     # Optional distribution-specific parameters (unused by exponential)
     params: {}
 
-    # Heterogeneity hook: mean scaling multiplier applied to samples.
     hetero:
       enabled: true
       mode: multiply
 
-      # Compact, deterministic, reviewable heterogeneity definition.
-      # The sum of counts MUST equal n_trials.
+      # v2: control where heterogeneity is applied.
+      # - both: does NOT break CA-CFAR (scale invariant)
+      # - cut/ref: breaks CFAR (intended for this demo)
+      apply_to: cut
+
+      # Deterministic, reviewable heterogeneity definition.
+      # Sum(counts) MUST equal n_trials.
+      #
+      # Here we force 50% of trials to have a CUT mean that is 2x larger than the refs,
+      # which should dramatically increase false alarms compared to the target Pfa.
       mean_multiplier_segments:
-        - value: 0.7
-          count: 500000
         - value: 1.0
           count: 1000000
-        - value: 1.8
-          count: 500000
+        - value: 2.0
+          count: 1000000
