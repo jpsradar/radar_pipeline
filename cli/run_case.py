@@ -1,45 +1,43 @@
 """
 cli/run_case.py
 
-Reproducible case runner for the radar pipeline.
+Reproducible case runner (single-case orchestrator).
 
-Why this module exists
-----------------------
-This file is the "orchestrator" for a single runnable case:
-- Load + validate a case config (schema-driven)
-- Resolve engine selection (explicit or auto)
-- Derive a stable run identity (case stem + engine + seed + config hash)
-- Write provenance artifacts (case_manifest + manifest + metrics + optional HTML report)
+Role in the pipeline
+--------------------
+This module is the entrypoint that turns a case config into a fully traceable run.
+It is intentionally boring: it wires configuration, execution, and artifacts.
+It must not implement radar math.
 
-This module MUST remain boring and deterministic.
-It should not implement radar math; it only wires contracts and I/O.
+Responsibilities
+----------------
+- Load + validate the case configuration (schema-driven).
+- Resolve the execution engine (explicit or auto).
+- Derive a stable run identity:
+    <case_stem>__<engine>__seed<seed>__cfg<config_hash_prefix>
+- Persist provenance and contracts:
+    - config.normalized.json  : the normalized config that actually ran
+    - manifest.json           : minimal, stable execution/provenance contract
+    - case_manifest.json      : repo-native, richer provenance (existing format)
+    - metrics.json            : engine outputs + injected execution/validity blocks
 
-Contract: Execution metadata is mandatory
-----------------------------------------
-To prevent "it ran but we don't know what it meant", every run MUST persist a
-human-auditable execution contract into outputs.
-
-We enforce and persist:
-- mode:        resolved engine actually executed ("model_based" | "monte_carlo" | "signal_level")
-- seed:        integer seed actually used
-- assumptions: engineering assumptions declared in the case config
-- validity:    minimal validity contract (stat model / clutter regime / limits)
-
-Where it is written:
-- metrics.json       : top-level "execution" block (always present)
-- case_manifest.json : richer provenance (already in repo)
-- manifest.json      : minimal, standardized contract for external readers
+Execution contract (mandatory)
+------------------------------
+Every run MUST write an auditable contract to disk, independent of reports:
+- execution.mode        : engine actually executed (model_based | monte_carlo | signal_level)
+- execution.seed        : seed used
+- execution.assumptions : assumptions declared in the case config (or "unspecified")
+- validity              : minimal, conservative validity contract (top-level)
 
 Engine/config consistency
 -------------------------
-If the case config declares execution.mode, we require it to match the resolved engine
-(we do NOT silently switch meaning).
+If the case config declares execution.mode, it MUST match the resolved engine.
+Mismatches fail loudly (we do not silently reinterpret config intent).
 
-Path redaction
---------------
-Console output avoids absolute paths:
-- If inside project root: ${PROJECT_ROOT}/...
-- Else: basename only
+Failure behavior
+----------------
+manifest.json and config.normalized.json are written before running the engine.
+If execution fails, the manifest is updated with status="failed" and an error string.
 """
 
 from __future__ import annotations
@@ -53,7 +51,7 @@ from typing import Any, Dict, List, Optional
 
 from core.config.loaders import ConfigError, LoadOptions, load_case
 from core.config.manifest import compute_config_hash, write_case_manifest
-from core.runtime.manifest import write_manifest
+from core.runtime.manifest import write_manifest, write_normalized_config
 
 
 # ---------------------------------------------------------------------
@@ -95,8 +93,10 @@ def _parse_args() -> argparse.Namespace:
 
     parser.add_argument("--name", default=None, help="Optional display name (report title only).")
 
-    # IMPORTANT: --seed remains optional; if not provided, we will use $SEED if set,
-    # otherwise derive from config hash.
+    # Seed precedence:
+    #   1) --seed (explicit)
+    #   2) $SEED
+    #   3) derived from config hash
     parser.add_argument("--seed", type=int, default=None, help="Optional RNG seed (overrides $SEED).")
 
     parser.add_argument("--schema-dir", default="configs/schemas", help="Schema folder (default: configs/schemas).")
@@ -117,28 +117,15 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _auto_select_engine(cfg: Dict[str, Any]) -> str:
-    """
-    Minimal, deterministic engine auto-selection.
-
-    Rule
-    ----
-    - If cfg has a 'monte_carlo' dict: treat as a Monte Carlo experiment case.
-    - Else: treat as a model_based performance case.
-    """
     mc = cfg.get("monte_carlo", None)
     return "monte_carlo" if isinstance(mc, dict) else "model_based"
 
 
 def _derive_seed(config_hash: str) -> int:
-    """Derive a stable default seed from the config hash (bounded to signed 32-bit range)."""
     return int(config_hash[:8], 16) % (2**31 - 1)
 
 
 def _seed_from_env() -> Optional[int]:
-    """
-    Read SEED from environment if present and valid.
-    Returns None if unset/invalid.
-    """
     raw = os.environ.get("SEED", "").strip()
     if not raw:
         return None
@@ -149,11 +136,6 @@ def _seed_from_env() -> Optional[int]:
 
 
 def _ensure_empty_dir(path: Path, *, overwrite: bool) -> None:
-    """
-    Ensure output directory exists and is safe to write into.
-
-    If overwrite=False and the directory exists, we refuse (reproducibility guard).
-    """
     if path.exists() and not overwrite:
         raise FileExistsError(
             f"Output directory already exists: {path}\n"
@@ -163,7 +145,6 @@ def _ensure_empty_dir(path: Path, *, overwrite: bool) -> None:
 
 
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
-    """Write a JSON payload with stable formatting (diff-friendly)."""
     path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
 
@@ -173,9 +154,6 @@ def _write_json(path: Path, payload: Dict[str, Any]) -> None:
 
 
 def _get_cfg_execution_mode(cfg: Dict[str, Any]) -> Optional[str]:
-    """
-    Read cfg.execution.mode if present.
-    """
     ex = cfg.get("execution", None)
     if not isinstance(ex, dict):
         return None
@@ -186,9 +164,6 @@ def _get_cfg_execution_mode(cfg: Dict[str, Any]) -> Optional[str]:
 
 
 def _get_cfg_assumptions(cfg: Dict[str, Any]) -> List[str]:
-    """
-    Read cfg.assumptions as a list of strings.
-    """
     raw = cfg.get("assumptions", None)
     if raw is None:
         return []
@@ -203,9 +178,6 @@ def _get_cfg_assumptions(cfg: Dict[str, Any]) -> List[str]:
 
 
 def _assert_engine_matches_execution_mode(*, engine_selected: str, cfg_mode: Optional[str]) -> None:
-    """
-    Enforce that cfg.execution.mode (if declared) matches the resolved engine.
-    """
     if cfg_mode is None:
         return
     eng = str(engine_selected).lower().strip()
@@ -223,26 +195,22 @@ def _inject_execution_contract(
     engine_selected: str,
     seed: int,
     assumptions: List[str],
+    validity: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """
-    Inject a mandatory, top-level execution contract into metrics.
-    """
     metrics_out = dict(metrics)
     metrics_out["execution"] = {
         "mode": str(engine_selected).lower().strip(),
         "seed": int(seed),
         "assumptions": assumptions if assumptions else ["unspecified"],
     }
+    # validity at top-level (same intent as manifest.json)
+    metrics_out["validity"] = validity
     return metrics_out
 
 
 def _infer_validity(cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Minimal validity contract inference from config.
-    Conservative and human-auditable.
-    """
     stat_model = "unknown"
-    clutter = "none"
+    clutter = "unknown"
 
     mc = cfg.get("monte_carlo", {}) if isinstance(cfg.get("monte_carlo", None), dict) else {}
     bg = mc.get("background", {}) if isinstance(mc.get("background", None), dict) else {}
@@ -290,11 +258,6 @@ def _run_engine(engine: str, cfg: Dict[str, Any], seed: int) -> Dict[str, Any]:
 
 
 def _write_html_report(out_dir: Path, title: str | None = None) -> None:
-    """
-    Generate report.html for a single case directory.
-
-    Report generation is a pure post-process; it should not rerun simulations.
-    """
     from reports.case_generators import generate_case_report_html  # type: ignore
 
     metrics_path = out_dir / "metrics.json"
@@ -311,9 +274,6 @@ def _write_html_report(out_dir: Path, title: str | None = None) -> None:
 
 
 def _pretty_path(path: Path, project_root: Path) -> str:
-    """
-    Render a path without leaking absolute filesystem locations.
-    """
     try:
         rel = path.resolve().relative_to(project_root.resolve())
         return str(Path("${PROJECT_ROOT}") / rel)
@@ -360,10 +320,6 @@ def main() -> int:
     # ---- Compute stable run identity ----
     cfg_hash = compute_config_hash(cfg, project_root=project_root)
 
-    # Seed precedence:
-    #   1) --seed (explicit)
-    #   2) $SEED (runner-wide deterministic tag)
-    #   3) derived from config hash (stable fallback)
     if args.seed is not None:
         seed = int(args.seed)
         seed_source = "user"
@@ -387,6 +343,28 @@ def main() -> int:
         print(f"[ERROR] {msg}")
         return 4
 
+    assumptions = _get_cfg_assumptions(cfg)
+    validity = _infer_validity(cfg)
+
+    # ---- Write normalized config + manifest early (even if engine fails) ----
+    write_normalized_config(out_dir, cfg)
+    write_manifest(
+        out_dir=out_dir,
+        run_id=ident.run_id,
+        case_path=str(case_path),
+        cfg_hash=cfg_hash,
+        engine_requested=str(args.engine),
+        engine_selected=str(selected_engine),
+        seed=int(seed),
+        seed_source=str(seed_source),
+        assumptions=assumptions,
+        validity=validity,
+        schema_name=str(args.schema),
+        schema_dir=str(args.schema_dir),
+        status="started",
+        error=None,
+    )
+
     # ---- Write case_manifest.json (repo-native provenance) ----
     extras = {
         "cli_args": vars(args),
@@ -397,7 +375,7 @@ def main() -> int:
         "seed_source": seed_source,
         "display_name": args.name or "",
         "execution_mode_declared": cfg_mode or "",
-        "assumptions_declared": _get_cfg_assumptions(cfg),
+        "assumptions_declared": assumptions,
     }
     try:
         write_case_manifest(
@@ -409,34 +387,73 @@ def main() -> int:
             engine_package="radar-pipeline",
         )
     except Exception as exc:
+        # mark manifest failed
+        write_manifest(
+            out_dir=out_dir,
+            run_id=ident.run_id,
+            case_path=str(case_path),
+            cfg_hash=cfg_hash,
+            engine_requested=str(args.engine),
+            engine_selected=str(selected_engine),
+            seed=int(seed),
+            seed_source=str(seed_source),
+            assumptions=assumptions,
+            validity=validity,
+            schema_name=str(args.schema),
+            schema_dir=str(args.schema_dir),
+            status="failed",
+            error=f"Failed to write case_manifest.json: {exc}",
+        )
         print(f"[ERROR] Failed to write case_manifest.json: {exc}")
         return 5
 
-    # ---- Run engine + write metrics (+ execution contract) ----
+    # ---- Run engine + write metrics (+ contracts) ----
     try:
         metrics = _run_engine(selected_engine, cfg, seed=seed)
-
-        assumptions = _get_cfg_assumptions(cfg)
         metrics = _inject_execution_contract(
             metrics=metrics,
             engine_selected=selected_engine,
             seed=seed,
             assumptions=assumptions,
+            validity=validity,
         )
-
         _write_json(out_dir / "metrics.json", metrics)
 
-        # ---- Write standardized manifest.json ----
+        # finalize manifest
         write_manifest(
             out_dir=out_dir,
-            cfg=cfg,
-            execution_mode=str(selected_engine).lower().strip(),
+            run_id=ident.run_id,
+            case_path=str(case_path),
+            cfg_hash=cfg_hash,
+            engine_requested=str(args.engine),
+            engine_selected=str(selected_engine),
             seed=int(seed),
+            seed_source=str(seed_source),
             assumptions=assumptions,
-            validity=_infer_validity(cfg),
+            validity=validity,
+            schema_name=str(args.schema),
+            schema_dir=str(args.schema_dir),
+            status="completed",
+            error=None,
         )
 
     except Exception as exc:
+        write_manifest(
+            out_dir=out_dir,
+            run_id=ident.run_id,
+            case_path=str(case_path),
+            cfg_hash=cfg_hash,
+            engine_requested=str(args.engine),
+            engine_selected=str(selected_engine),
+            seed=int(seed),
+            seed_source=str(seed_source),
+            assumptions=assumptions,
+            validity=validity,
+            schema_name=str(args.schema),
+            schema_dir=str(args.schema_dir),
+            status="failed",
+            error=str(exc),
+        )
         print(f"[ERROR] Engine run failed: {exc}")
         return 6
 
