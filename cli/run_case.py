@@ -14,8 +14,8 @@ This file is the "orchestrator" for a single runnable case:
 This module MUST remain boring and deterministic.
 It should not implement radar math; it only wires contracts and I/O.
 
-Contract: Execution metadata is mandatory (FASE 1.1)
-----------------------------------------------------
+Contract: Execution metadata is mandatory
+----------------------------------------
 To prevent "it ran but we don't know what it meant", every run MUST persist a
 human-auditable execution contract into outputs.
 
@@ -25,8 +25,8 @@ We enforce and persist:
 - assumptions: the engineering assumptions declared in the case config
 
 Where it is written:
-- metrics.json  : top-level "execution" block (always present)
-- case_manifest.json : already includes seed + extras; metrics also mirrors execution for consumers
+- metrics.json        : top-level "execution" block (always present)
+- case_manifest.json  : includes seed + extras; metrics mirrors execution for consumers
 
 Engine/config consistency
 -------------------------
@@ -39,12 +39,6 @@ Path redaction
 Console output avoids absolute paths:
 - If inside project root: ${PROJECT_ROOT}/...
 - Else: basename only
-
-Changes in this revision
-------------------------
-- Add strict, mandatory "execution" block to metrics.json (FASE 1.1).
-- Validate that cfg.execution.mode (if present) matches the resolved engine.
-- Keep existing behavior for run IDs, overwrite protection, manifest writing, and report generation.
 """
 
 from __future__ import annotations
@@ -62,6 +56,7 @@ from core.config.manifest import compute_config_hash, write_case_manifest
 # ---------------------------------------------------------------------
 # Run identity / directory naming
 # ---------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class RunIdentity:
@@ -84,6 +79,7 @@ class RunIdentity:
 # ---------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -117,8 +113,8 @@ def _auto_select_engine(cfg: Dict[str, Any]) -> str:
     """
     Minimal, deterministic engine auto-selection.
 
-    Rule (v1)
-    ---------
+    Rule
+    ----
     - If cfg has a 'monte_carlo' dict: treat as a Monte Carlo experiment case.
     - Else: treat as a model_based performance case.
     """
@@ -151,8 +147,9 @@ def _write_json(path: Path, payload: Dict[str, Any]) -> None:
 
 
 # ---------------------------------------------------------------------
-# Execution contract helpers (FASE 1.1)
+# Execution contract helpers
 # ---------------------------------------------------------------------
+
 
 def _get_cfg_execution_mode(cfg: Dict[str, Any]) -> Optional[str]:
     """
@@ -226,7 +223,6 @@ def _inject_execution_contract(
     metrics_out["execution"] = {
         "mode": str(engine_selected).lower().strip(),
         "seed": int(seed),
-        # Always present: if the case did not specify assumptions, we record that explicitly.
         "assumptions": assumptions if assumptions else ["unspecified"],
     }
     return metrics_out
@@ -235,6 +231,7 @@ def _inject_execution_contract(
 # ---------------------------------------------------------------------
 # Engine dispatch
 # ---------------------------------------------------------------------
+
 
 def _run_engine(engine: str, cfg: Dict[str, Any], seed: int) -> Dict[str, Any]:
     engine_n = str(engine).lower().strip()
@@ -245,9 +242,11 @@ def _run_engine(engine: str, cfg: Dict[str, Any], seed: int) -> Dict[str, Any]:
         return run_model_based_case(cfg=cfg, seed=seed)
 
     if engine_n == "monte_carlo":
-        from core.simulation.monte_carlo import run_pfa_monte_carlo  # type: ignore
+        # IMPORTANT: new unified entrypoint supports task=pfa|pd|pfa_pd,
+        # but remains backward compatible (default task is pfa).
+        from core.simulation.monte_carlo import run_monte_carlo  # type: ignore
 
-        return run_pfa_monte_carlo(cfg=cfg, seed=seed)
+        return run_monte_carlo(cfg=cfg, seed=seed)
 
     if engine_n == "signal_level":
         from core.simulation.signal_level import run_signal_level_case  # type: ignore
@@ -299,6 +298,7 @@ def _pretty_path(path: Path, project_root: Path) -> str:
 # Main
 # ---------------------------------------------------------------------
 
+
 def main() -> int:
     args = _parse_args()
 
@@ -327,7 +327,7 @@ def main() -> int:
     if str(selected_engine).lower().strip() == "auto":
         selected_engine = _auto_select_engine(cfg)
 
-    # ---- Enforce execution.mode contract if present (FASE 1.1) ----
+    # ---- Enforce execution.mode contract if present ----
     cfg_mode = _get_cfg_execution_mode(cfg)
     _assert_engine_matches_execution_mode(engine_selected=selected_engine, cfg_mode=cfg_mode)
 
@@ -342,7 +342,6 @@ def main() -> int:
     try:
         _ensure_empty_dir(out_dir, overwrite=bool(args.overwrite))
     except Exception as exc:
-        # Keep the error message but redact absolute paths.
         msg = str(exc).replace(str(project_root), "${PROJECT_ROOT}")
         print(f"[ERROR] {msg}")
         return 4
@@ -356,7 +355,6 @@ def main() -> int:
         "run_id": ident.run_id,
         "seed_source": "user" if args.seed is not None else "derived_from_config_hash",
         "display_name": args.name or "",
-        # Mirror key contract fields for easy inspection in the manifest as well.
         "execution_mode_declared": cfg_mode or "",
         "assumptions_declared": _get_cfg_assumptions(cfg),
     }
@@ -377,7 +375,6 @@ def main() -> int:
     try:
         metrics = _run_engine(selected_engine, cfg, seed=seed)
 
-        # Mandatory execution contract for all engines (FASE 1.1)
         assumptions = _get_cfg_assumptions(cfg)
         metrics = _inject_execution_contract(
             metrics=metrics,

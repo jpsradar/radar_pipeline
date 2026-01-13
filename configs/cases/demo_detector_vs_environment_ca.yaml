@@ -1,0 +1,38 @@
+# configs/cases/demo_detector_vs_environment_ca.yaml
+#
+# Trade-off demo: detector vs environment (heterogeneous background).
+# CA-CFAR is scale-invariant only if CUT and REF scale together.
+# Here we intentionally break that assumption by scaling CUT only.
+#
+# Expected:
+# - Empirical Pfa deviates strongly from target (CFAR failure).
+
+execution:
+  mode: monte_carlo
+
+assumptions:
+  - "Independent trials Monte Carlo: CUT and reference samples are IID within a trial."
+  - "Non-homogeneity is introduced by scaling ONLY the CUT distribution (clutter-edge surrogate)."
+  - "This demo is about false alarms (Pfa) under heterogeneity; it does not estimate Pd."
+
+monte_carlo:
+  seed: 123
+  pfa: 1.0e-3
+  n_trials: 300000
+  detector: ca_cfar_independent
+  n_ref: 32
+
+  background:
+    model: exponential
+    mean_power: 1.0
+    params: {}
+
+    hetero:
+      enabled: true
+      mode: multiply
+      apply_to: cut
+      mean_multiplier_segments:
+        - value: 1.0
+          count: 150000
+        - value: 2.0
+          count: 150000

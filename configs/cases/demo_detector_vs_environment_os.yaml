@@ -1,0 +1,49 @@
+# configs/cases/demo_detector_vs_environment_os.yaml
+#
+# Trade-off demo: detector vs environment (heterogeneous background).
+# Same heterogeneity as the CA-CFAR case, but using OS-CFAR.
+#
+# Expected:
+# - OS-CFAR should be less sensitive to clutter-edge-like heterogeneity than CA-CFAR
+#   (empirical Pfa closer to target), at the expense of different threshold behavior.
+
+execution:
+  mode: monte_carlo
+
+assumptions:
+  - "Independent trials Monte Carlo: CUT and reference samples are IID within a trial."
+  - "Non-homogeneity is introduced by scaling ONLY the CUT distribution (clutter-edge surrogate)."
+  - "OS-CFAR alpha is calibrated under the declared homogeneous background model by Monte Carlo."
+
+monte_carlo:
+  seed: 123
+  pfa: 1.0e-3
+  n_trials: 300000
+  detector: os_cfar_independent
+  n_ref: 32
+
+  # Rank choice (choose ONE):
+  # - rank_k: integer in [1, n_ref]
+  # - rank_frac: fraction in (0,1], k = ceil(rank_frac * n_ref)
+  #
+  # 0.75 is a sane robust-ish default.
+  rank_frac: 0.75
+
+  # Alpha calibration controls (optional; keeps it explicit and reproducible)
+  alpha_calibration_n: 200000
+  alpha_calibration_seed: 123
+
+  background:
+    model: exponential
+    mean_power: 1.0
+    params: {}
+
+    hetero:
+      enabled: true
+      mode: multiply
+      apply_to: cut
+      mean_multiplier_segments:
+        - value: 1.0
+          count: 150000
+        - value: 2.0
+          count: 150000

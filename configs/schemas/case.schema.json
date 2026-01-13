@@ -1,584 +1,605 @@
-{
-  "$comment": "Radar Pipeline Case Schema\n\nPurpose\n-------\nDefines a strict, versioned contract for runnable radar pipeline cases.\n\nKey guarantees\n--------------\n- Explicit execution.mode to prevent CLI/config mismatches.\n- assumptions[] to document engineering modeling assumptions (publishable + honest).\n- Self-contained schema (no external $ref) to avoid resolver issues in jsonschema.\n\nCase families\n-------------\noneOf:\n- performance_case: model_based | signal_level\n- monte_carlo_case: monte_carlo\n\nStrictness\n----------\n- unevaluatedProperties=false at the top level\n- additionalProperties=false inside major objects\n",
-  "$defs": {
-    "antenna": {
-      "additionalProperties": false,
-      "properties": {
-        "gain_rx_db": {
-          "type": "number"
-        },
-        "gain_tx_db": {
-          "type": "number"
-        }
-      },
-      "required": [
-        "gain_tx_db"
-      ],
-      "type": "object"
-    },
-    "assumptions": {
-      "items": {
-        "minLength": 1,
-        "type": "string"
-      },
-      "minItems": 1,
-      "type": "array"
-    },
-    "background": {
-      "additionalProperties": false,
-      "properties": {
-        "hetero": {
-          "$ref": "#/$defs/hetero"
-        },
-        "mean_power": {
-          "exclusiveMinimum": 0,
-          "type": "number"
-        },
-        "model": {
-          "enum": [
-            "exponential",
-            "weibull",
-            "lognormal",
-            "k"
-          ],
-          "type": "string"
-        },
-        "params": {
-          "additionalProperties": true,
-          "type": "object"
-        }
-      },
-      "required": [
-        "model"
-      ],
-      "type": "object"
-    },
-    "execution": {
-      "additionalProperties": false,
-      "properties": {
-        "mode": {
-          "enum": [
-            "model_based",
-            "signal_level",
-            "monte_carlo"
-          ],
-          "type": "string"
-        }
-      },
-      "required": [
-        "mode"
-      ],
-      "type": "object"
-    },
-    "hetero": {
-      "additionalProperties": false,
-      "properties": {
-        "$comment": "Heterogeneity hook (v2): apply_to controls whether scaling is applied to CUT, REF, or both.\n- both: scale-invariant for CA/OS-CFAR (should NOT break CFAR)\n- cut/ref: intentionally violates homogeneity -> CFAR should fail visibly",
-        "apply_to": {
-          "default": "both",
-          "enum": [
-            "both",
-            "cut",
-            "ref"
-          ],
-          "type": "string"
-        },
-        "enabled": {
-          "type": "boolean"
-        },
-        "mean_multiplier": {
-          "exclusiveMinimum": 0,
-          "type": "number"
-        },
-        "mean_multiplier_segments": {
-          "items": {
-            "additionalProperties": false,
-            "properties": {
-              "count": {
-                "minimum": 1,
-                "type": "integer"
-              },
-              "value": {
-                "exclusiveMinimum": 0,
-                "type": "number"
-              }
-            },
-            "required": [
-              "value",
-              "count"
-            ],
-            "type": "object"
-          },
-          "minItems": 1,
-          "type": "array"
-        },
-        "mode": {
-          "enum": [
-            "multiply"
-          ],
-          "type": "string"
-        }
-      },
-      "required": [
-        "enabled"
-      ],
-      "type": "object"
-    },
-    "interference": {
-      "additionalProperties": false,
-      "properties": {
-        "jnr_db": {
-          "description": "Jammer-to-noise ratio at receiver input [dB].",
-          "type": "number"
-        },
-        "model": {
-          "enum": [
-            "noise_like_jammer"
-          ],
-          "type": "string"
-        },
-        "notes": {
-          "minLength": 1,
-          "type": "string"
-        }
-      },
-      "required": [
-        "model"
-      ],
-      "type": "object"
-    },
-    "monte_carlo": {
-      "additionalProperties": false,
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "task": {
-                "enum": [
-                  "pd",
-                  "pfa_pd"
-                ]
-              }
-            },
-            "required": [
-              "task"
-            ]
-          },
-          "then": {
-            "properties": {
-              "background": {
-                "allOf": [
-                  {
-                    "$ref": "#/$defs/background"
-                  },
-                  {
-                    "required": [
-                      "mean_power"
-                    ],
-                    "type": "object"
-                  }
-                ]
-              },
-              "detector": {
-                "enum": [
-                  "ca_cfar_independent",
-                  "os_cfar_independent"
-                ],
-                "type": "string"
-              }
-            },
-            "required": [
-              "pd"
-            ]
-          }
-        }
-      ],
-      "properties": {
-        "alpha": {
-          "description": "Optional manual alpha override. If omitted, alpha may be computed or calibrated by the detector.",
-          "exclusiveMinimum": 0,
-          "type": "number"
-        },
-        "alpha_calibration_n": {
-          "description": "OS-CFAR: number of trials used to calibrate alpha under a homogeneous background.",
-          "minimum": 10000,
-          "type": "integer"
-        },
-        "alpha_calibration_seed": {
-          "description": "OS-CFAR: RNG seed used for alpha calibration (if performed).",
-          "type": "integer"
-        },
-        "background": {
-          "$ref": "#/$defs/background"
-        },
-        "detector": {
-          "enum": [
-            "ca_cfar_independent",
-            "ca_cfar_1d_sliding",
-            "os_cfar_independent"
-          ],
-          "type": "string"
-        },
-        "n_cells": {
-          "minimum": 5,
-          "type": "integer"
-        },
-        "n_guard": {
-          "minimum": 0,
-          "type": "integer"
-        },
-        "n_ref": {
-          "minimum": 1,
-          "type": "integer"
-        },
-        "n_train": {
-          "minimum": 1,
-          "type": "integer"
-        },
-        "n_trials": {
-          "minimum": 1,
-          "type": "integer"
-        },
-        "pd": {
-          "additionalProperties": false,
-          "properties": {
-            "integration": {
-              "description": "Integration mode for Pd Monte Carlo. Power-domain MC supports noncoherent integration only.",
-              "enum": [
-                "noncoherent"
-              ],
-              "type": "string"
-            },
-            "n_pulses": {
-              "description": "Number of pulses integrated noncoherently in the power domain.",
-              "minimum": 1,
-              "type": "integer"
-            },
-            "snr_db": {
-              "description": "Mean SNR per pulse in the CUT, expressed relative to background.mean_power [dB].",
-              "type": "number"
-            },
-            "swerling": {
-              "description": "Target fluctuation model. 0=nonfluctuating. 1/2 exponential (slow/fast). 3/4 gamma(k=2) (slow/fast).",
-              "enum": [
-                "swerling0",
-                "swerling1",
-                "swerling2",
-                "swerling3",
-                "swerling4"
-              ],
-              "type": "string"
-            }
-          },
-          "required": [
-            "snr_db",
-            "n_pulses",
-            "integration",
-            "swerling"
-          ],
-          "type": "object"
-        },
-        "pfa": {
-          "exclusiveMaximum": 1,
-          "exclusiveMinimum": 0,
-          "type": "number"
-        },
-        "rank_frac": {
-          "description": "OS-CFAR: fraction in (0,1] mapped to rank_k = ceil(rank_frac * n_ref). Use either rank_k or rank_frac.",
-          "exclusiveMinimum": 0,
-          "maximum": 1,
-          "type": "number"
-        },
-        "rank_k": {
-          "description": "OS-CFAR: 1-based order-statistic rank (1=smallest, n_ref=largest). Use either rank_k or rank_frac.",
-          "minimum": 1,
-          "type": "integer"
-        },
-        "seed": {
-          "type": "integer"
-        },
-        "task": {
-          "default": "pfa",
-          "description": "Monte Carlo task selector. pfa: background-only false-alarm estimation. pd: detection probability with target fluctuation (Swerling). pfa_pd: run both.",
-          "enum": [
-            "pfa",
-            "pd",
-            "pfa_pd"
-          ],
-          "type": "string"
-        }
-      },
-      "required": [
-        "pfa",
-        "n_trials",
-        "detector",
-        "background"
-      ],
-      "type": "object"
-    },
-    "monte_carlo_case": {
-      "additionalProperties": false,
-      "properties": {
-        "assumptions": {
-          "$ref": "#/$defs/assumptions"
-        },
-        "execution": {
-          "allOf": [
-            {
-              "$ref": "#/$defs/execution"
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "mode": {
-                  "const": "monte_carlo",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "mode"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "monte_carlo": {
-          "$ref": "#/$defs/monte_carlo"
-        }
-      },
-      "required": [
-        "execution",
-        "assumptions",
-        "monte_carlo"
-      ],
-      "type": "object"
-    },
-    "performance_case": {
-      "additionalProperties": false,
-      "properties": {
-        "antenna": {
-          "$ref": "#/$defs/antenna"
-        },
-        "assumptions": {
-          "$ref": "#/$defs/assumptions"
-        },
-        "detection": {
-          "$ref": "#/$defs/detection"
-        },
-        "environment": {
-          "$ref": "#/$defs/environment"
-        },
-        "execution": {
-          "allOf": [
-            {
-              "$ref": "#/$defs/execution"
-            },
-            {
-              "additionalProperties": false,
-              "properties": {
-                "mode": {
-                  "enum": [
-                    "model_based",
-                    "signal_level"
-                  ],
-                  "type": "string"
-                }
-              },
-              "required": [
-                "mode"
-              ],
-              "type": "object"
-            }
-          ]
-        },
-        "geometry": {
-          "$ref": "#/$defs/geometry"
-        },
-        "interference": {
-          "$ref": "#/$defs/interference"
-        },
-        "metrics": {
-          "$ref": "#/$defs/metrics"
-        },
-        "radar": {
-          "$ref": "#/$defs/radar"
-        },
-        "receiver": {
-          "$ref": "#/$defs/receiver"
-        },
-        "target": {
-          "$ref": "#/$defs/target"
-        }
-      },
-      "required": [
-        "execution",
-        "assumptions",
-        "radar",
-        "antenna",
-        "receiver",
-        "target"
-      ],
-      "type": "object"
-    },
-    "properties": {
-      "rcs_sqm": {
-        "exclusiveMinimum": 0,
-        "type": "number"
-      }
-    },
-    "radar": {
-      "additionalProperties": false,
-      "properties": {
-        "duty_cycle": {
-          "maximum": 1,
-          "minimum": 0,
-          "type": "number"
-        },
-        "fc_hz": {
-          "exclusiveMinimum": 0,
-          "type": "number"
-        },
-        "prf_hz": {
-          "exclusiveMinimum": 0,
-          "type": "number"
-        },
-        "tx_power_w": {
-          "exclusiveMinimum": 0,
-          "type": "number"
-        }
-      },
-      "required": [
-        "fc_hz",
-        "tx_power_w"
-      ],
-      "type": "object"
-    },
-    "receiver": {
-      "additionalProperties": false,
-      "properties": {
-        "bw_hz": {
-          "exclusiveMinimum": 0,
-          "type": "number"
-        },
-        "nf_db": {
-          "minimum": 0,
-          "type": "number"
-        },
-        "temperature_k": {
-          "exclusiveMinimum": 0,
-          "type": "number"
-        }
-      },
-      "required": [
-        "bw_hz",
-        "nf_db"
-      ],
-      "type": "object"
-    },
-    "target": {
-      "additionalProperties": false,
-      "properties": {
-        "fluctuation": {
-          "default": "swerling0",
-          "description": "Target RCS fluctuation model. swerling0 = constant RCS baseline.",
-          "enum": [
-            "swerling0",
-            "swerling1",
-            "swerling2",
-            "swerling3",
-            "swerling4"
-          ],
-          "type": "string"
-        },
-        "rcs_sqm": {
-          "exclusiveMinimum": 0,
-          "type": "number"
-        }
-      },
-      "required": [
-        "rcs_sqm"
-      ],
-      "type": "object"
-    }
-  },
-  "$id": "case.schema.json",
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "detection": {
-    "additionalProperties": false,
-    "properties": {
-      "integration": {
-        "enum": [
-          "noncoherent",
-          "coherent"
-        ],
-        "type": "string"
-      },
-      "n_pulses": {
-        "minimum": 1,
-        "type": "integer"
-      },
-      "pfa": {
-        "exclusiveMaximum": 1,
-        "exclusiveMinimum": 0,
-        "type": "number"
-      }
-    },
-    "type": "object"
-  },
-  "environment": {
-    "additionalProperties": false,
-    "properties": {
-      "system_losses_db": {
-        "minimum": 0,
-        "type": "number"
-      }
-    },
-    "type": "object"
-  },
-  "geometry": {
-    "additionalProperties": false,
-    "properties": {
-      "beams_per_scan": {
-        "minimum": 1,
-        "type": "integer"
-      },
-      "n_cpi_per_dwell": {
-        "minimum": 1,
-        "type": "integer"
-      },
-      "n_doppler_bins": {
-        "minimum": 1,
-        "type": "integer"
-      },
-      "n_range_bins": {
-        "minimum": 1,
-        "type": "integer"
-      }
-    },
-    "type": "object"
-  },
-  "metrics": {
-    "additionalProperties": false,
-    "properties": {
-      "ranges_m": {
-        "items": {
-          "exclusiveMinimum": 0,
-          "type": "number"
-        },
-        "type": "array"
-      }
-    },
-    "type": "object"
-  },
-  "oneOf": [
-    {
-      "$ref": "#/$defs/performance_case"
-    },
-    {
-      "$ref": "#/$defs/monte_carlo_case"
-    }
-  ],
-  "title": "Radar Pipeline Case Schema (v5-execution+interference, self-contained)",
-  "type": "object",
-  "unevaluatedProperties": false
-}
+	{
+		"$schema": "https://json-schema.org/draft/2020-12/schema",
+		"$id": "case.schema.json",
+		"title": "Radar Pipeline Case Schema (v5-execution+interference, self-contained)",
+		"$comment": "Radar Pipeline Case Schema\n\nPurpose\n-------\nDefines a strict, versioned contract for runnable radar pipeline cases.\n\nKey guarantees\n--------------\n- Explicit execution.mode to prevent CLI/config mismatches.\n- assumptions[] to document engineering modeling assumptions (publishable + honest).\n- Self-contained schema (no external $ref) to avoid resolver issues in jsonschema.\n\nCase families\n-------------\noneOf:\n- performance_case: model_based | signal_level\n- monte_carlo_case: monte_carlo\n\nStrictness\n----------\n- unevaluatedProperties=false at the top level\n- additionalProperties=false inside major objects\n",
+		"type": "object",
+		"oneOf": [
+			{
+				"$ref": "#/$defs/performance_case"
+			},
+			{
+				"$ref": "#/$defs/monte_carlo_case"
+			}
+		],
+		"unevaluatedProperties": false,
+		"$defs": {
+			"execution": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": [
+					"mode"
+				],
+				"properties": {
+					"mode": {
+						"type": "string",
+						"enum": [
+							"model_based",
+							"signal_level",
+							"monte_carlo"
+						]
+					}
+				}
+			},
+			"assumptions": {
+				"type": "array",
+				"minItems": 1,
+				"items": {
+					"type": "string",
+					"minLength": 1
+				}
+			},
+			"performance_case": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": [
+					"execution",
+					"assumptions",
+					"radar",
+					"antenna",
+					"receiver",
+					"target"
+				],
+				"properties": {
+					"execution": {
+						"allOf": [
+							{
+								"$ref": "#/$defs/execution"
+							},
+							{
+								"type": "object",
+								"additionalProperties": false,
+								"required": [
+									"mode"
+								],
+								"properties": {
+									"mode": {
+										"type": "string",
+										"enum": [
+											"model_based",
+											"signal_level"
+										]
+									}
+								}
+							}
+						]
+					},
+					"assumptions": {
+						"$ref": "#/$defs/assumptions"
+					},
+					"radar": {
+						"$ref": "#/$defs/radar"
+					},
+					"antenna": {
+						"$ref": "#/$defs/antenna"
+					},
+					"receiver": {
+						"$ref": "#/$defs/receiver"
+					},
+					"target": {
+						"$ref": "#/$defs/target"
+					},
+					"environment": {
+						"$ref": "#/$defs/environment"
+					},
+					"interference": {
+						"$ref": "#/$defs/interference"
+					},
+					"detection": {
+						"$ref": "#/$defs/detection"
+					},
+					"metrics": {
+						"$ref": "#/$defs/metrics"
+					},
+					"geometry": {
+						"$ref": "#/$defs/geometry"
+					}
+				}
+			},
+			"monte_carlo_case": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": [
+					"execution",
+					"assumptions",
+					"monte_carlo"
+				],
+				"properties": {
+					"execution": {
+						"allOf": [
+							{
+								"$ref": "#/$defs/execution"
+							},
+							{
+								"type": "object",
+								"additionalProperties": false,
+								"required": [
+									"mode"
+								],
+								"properties": {
+									"mode": {
+										"type": "string",
+										"const": "monte_carlo"
+									}
+								}
+							}
+						]
+					},
+					"assumptions": {
+						"$ref": "#/$defs/assumptions"
+					},
+					"monte_carlo": {
+						"$ref": "#/$defs/monte_carlo"
+					}
+				}
+			},
+			"interference": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": [
+					"model"
+				],
+				"properties": {
+					"model": {
+						"type": "string",
+						"enum": [
+							"noise_like_jammer"
+						]
+					},
+					"jnr_db": {
+						"type": "number",
+						"description": "Jammer-to-noise ratio at receiver input [dB]."
+					},
+					"notes": {
+						"type": "string",
+						"minLength": 1
+					}
+				}
+			},
+			"monte_carlo": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": [
+					"pfa",
+					"n_trials",
+					"detector",
+					"background"
+				],
+				"properties": {
+					"task": {
+						"type": "string",
+						"default": "pfa",
+						"description": "Monte Carlo task selector. pfa: background-only false-alarm estimation. pd: detection probability with target fluctuation (Swerling). pfa_pd: run both.",
+						"enum": [
+							"pfa",
+							"pd",
+							"pfa_pd"
+						]
+					},
+					"seed": {
+						"type": "integer"
+					},
+					"pfa": {
+						"type": "number",
+						"exclusiveMinimum": 0,
+						"exclusiveMaximum": 1
+					},
+					"n_trials": {
+						"type": "integer",
+						"minimum": 1
+					},
+					"detector": {
+						"type": "string",
+						"enum": [
+							"ca_cfar_independent",
+							"ca_cfar_1d_sliding",
+							"os_cfar_independent"
+						]
+					},
+					"n_ref": {
+						"type": "integer",
+						"minimum": 1
+					},
+					"n_train": {
+						"type": "integer",
+						"minimum": 1
+					},
+					"n_guard": {
+						"type": "integer",
+						"minimum": 0
+					},
+					"n_cells": {
+						"type": "integer",
+						"minimum": 5
+					},
+					"rank_k": {
+						"type": "integer",
+						"minimum": 1,
+						"description": "OS-CFAR: 1-based order-statistic rank (1=smallest, n_ref=largest). Use either rank_k or rank_frac."
+					},
+					"rank_frac": {
+						"type": "number",
+						"exclusiveMinimum": 0,
+						"maximum": 1,
+						"description": "OS-CFAR: fraction in (0,1] mapped to rank_k = ceil(rank_frac * n_ref). Use either rank_k or rank_frac."
+					},
+					"alpha": {
+						"type": "number",
+						"exclusiveMinimum": 0,
+						"description": "Optional manual alpha override. If omitted, alpha may be computed or calibrated by the detector."
+					},
+					"alpha_calibration_n": {
+						"type": "integer",
+						"minimum": 10000,
+						"description": "OS-CFAR: number of trials used to calibrate alpha under a homogeneous background."
+					},
+					"alpha_calibration_seed": {
+						"type": "integer",
+						"description": "OS-CFAR: RNG seed used for alpha calibration (if performed)."
+					},
+					"pd": {
+						"type": "object",
+						"additionalProperties": false,
+						"required": [
+							"snr_db",
+							"n_pulses",
+							"integration",
+							"swerling"
+						],
+						"properties": {
+							"snr_db": {
+								"type": "number",
+								"description": "Mean SNR per pulse in the CUT, expressed relative to background.mean_power [dB]."
+							},
+							"n_pulses": {
+								"type": "integer",
+								"minimum": 1,
+								"description": "Number of pulses integrated noncoherently in the power domain."
+							},
+							"integration": {
+								"type": "string",
+								"enum": [
+									"noncoherent"
+								],
+								"description": "Integration mode for Pd Monte Carlo. Power-domain MC supports noncoherent integration only."
+							},
+							"swerling": {
+								"type": "string",
+								"enum": [
+									"swerling0",
+									"swerling1",
+									"swerling2",
+									"swerling3",
+									"swerling4"
+								],
+								"description": "Target fluctuation model. 0=nonfluctuating. 1/2 exponential (slow/fast). 3/4 gamma(k=2) (slow/fast)."
+							}
+						}
+					},
+					"background": {
+						"$ref": "#/$defs/background"
+					}
+				},
+				"allOf": [
+					{
+						"if": {
+							"properties": {
+								"task": {
+									"enum": [
+										"pd",
+										"pfa_pd"
+									]
+								}
+							},
+							"required": [
+								"task"
+							]
+						},
+						"then": {
+							"required": [
+								"pd"
+							],
+							"properties": {
+								"detector": {
+									"type": "string",
+									"enum": [
+										"ca_cfar_independent",
+										"os_cfar_independent"
+									]
+								},
+								"background": {
+									"allOf": [
+										{
+											"$ref": "#/$defs/background"
+										},
+										{
+											"type": "object",
+											"required": [
+												"mean_power"
+											]
+										}
+									]
+								}
+							}
+						}
+					}
+				]
+			},
+			"background": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": [
+					"model"
+				],
+				"properties": {
+					"model": {
+						"type": "string",
+						"enum": [
+							"exponential",
+							"weibull",
+							"lognormal",
+							"k"
+						]
+					},
+					"mean_power": {
+						"type": "number",
+						"exclusiveMinimum": 0
+					},
+					"params": {
+						"type": "object",
+						"additionalProperties": true
+					},
+					"hetero": {
+						"$ref": "#/$defs/hetero"
+					}
+				}
+			},
+			"hetero": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": [
+					"enabled"
+				],
+				"properties": {
+					"enabled": {
+						"type": "boolean"
+					},
+					"mode": {
+						"type": "string",
+						"enum": [
+							"multiply"
+						]
+					},
+					"$comment": "Heterogeneity hook (v2): apply_to controls whether scaling is applied to CUT, REF, or both.\n- both: scale-invariant for CA/OS-CFAR (should NOT break CFAR)\n- cut/ref: intentionally violates homogeneity -> CFAR should fail visibly",
+					"apply_to": {
+						"type": "string",
+						"enum": [
+							"both",
+							"cut",
+							"ref"
+						],
+						"default": "both"
+					},
+					"mean_multiplier": {
+						"type": "number",
+						"exclusiveMinimum": 0
+					},
+					"mean_multiplier_segments": {
+						"type": "array",
+						"minItems": 1,
+						"items": {
+							"type": "object",
+							"additionalProperties": false,
+							"required": [
+								"value",
+								"count"
+							],
+							"properties": {
+								"value": {
+									"type": "number",
+									"exclusiveMinimum": 0
+								},
+								"count": {
+									"type": "integer",
+									"minimum": 1
+								}
+							}
+						}
+					}
+				}
+			},
+			"radar": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": [
+					"fc_hz",
+					"tx_power_w"
+				],
+				"properties": {
+					"fc_hz": {
+						"description": "Carrier frequency [Hz]. Accepts numeric or numeric-string (e.g., 9.5e9).",
+						"oneOf": [
+							{
+								"type": "number",
+								"exclusiveMinimum": 0
+							},
+							{
+								"type": "string",
+								"pattern": "^[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?$"
+							}
+						]
+					},
+					"tx_power_w": {
+						"type": "number",
+						"exclusiveMinimum": 0
+					},
+					"prf_hz": {
+						"description": "Pulse repetition frequency [Hz].",
+						"oneOf": [
+							{
+								"type": "number",
+								"exclusiveMinimum": 0
+							},
+							{
+								"type": "string",
+								"pattern": "^[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?$"
+							}
+						]
+					},
+					"duty_cycle": {
+						"type": "number",
+						"minimum": 0,
+						"maximum": 1
+					}
+				}
+			},
+			"receiver": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": [
+					"bw_hz",
+					"nf_db"
+				],
+				"properties": {
+					"bw_hz": {
+						"description": "Receiver noise-equivalent bandwidth [Hz]. Accepts numeric or numeric-string (e.g., 2.0e6).",
+						"oneOf": [
+							{
+								"type": "number",
+								"exclusiveMinimum": 0
+							},
+							{
+								"type": "string",
+								"pattern": "^[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?$"
+							}
+						]
+					},
+					"nf_db": {
+						"type": "number",
+						"minimum": 0
+					},
+					"temperature_k": {
+						"type": "number",
+						"exclusiveMinimum": 0
+					}
+				}
+			},
+			"antenna": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": [
+					"gain_tx_db"
+				],
+				"properties": {
+					"gain_tx_db": {
+						"type": "number"
+					},
+					"gain_rx_db": {
+						"type": "number"
+					}
+				}
+			},
+			"target": {
+				"type": "object",
+				"additionalProperties": false,
+				"required": [
+					"rcs_sqm"
+				],
+				"properties": {
+					"rcs_sqm": {
+						"type": "number",
+						"exclusiveMinimum": 0
+					},
+					"fluctuation": {
+						"type": "string",
+						"enum": [
+							"swerling0",
+							"swerling1",
+							"swerling2",
+							"swerling3",
+							"swerling4"
+						],
+						"default": "swerling0",
+						"description": "Target RCS fluctuation model. swerling0 = constant RCS baseline."
+					}
+				}
+			},
+			"environment": {
+				"type": "object",
+				"additionalProperties": false,
+				"properties": {
+					"system_losses_db": {
+						"type": "number",
+						"minimum": 0
+					}
+				}
+			},
+			"detection": {
+				"type": "object",
+				"additionalProperties": false,
+				"properties": {
+					"pfa": {
+						"type": "number",
+						"exclusiveMinimum": 0,
+						"exclusiveMaximum": 1
+					},
+					"n_pulses": {
+						"type": "integer",
+						"minimum": 1
+					},
+					"integration": {
+						"type": "string",
+						"enum": [
+							"noncoherent",
+							"coherent"
+						]
+					}
+				}
+			},
+			"metrics": {
+				"type": "object",
+				"additionalProperties": false,
+				"properties": {
+					"ranges_m": {
+						"type": "array",
+						"items": {
+							"type": "number",
+							"exclusiveMinimum": 0
+						}
+					}
+				}
+			},
+			"geometry": {
+				"type": "object",
+				"additionalProperties": false,
+				"properties": {
+					"n_range_bins": {
+						"type": "integer",
+						"minimum": 1
+					},
+					"n_doppler_bins": {
+						"type": "integer",
+						"minimum": 1
+					},
+					"beams_per_scan": {
+						"type": "integer",
+						"minimum": 1
+					},
+					"n_cpi_per_dwell": {
+						"type": "integer",
+						"minimum": 1
+					}
+				}
+			}
+		}
+	}

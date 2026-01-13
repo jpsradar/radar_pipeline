@@ -1,0 +1,46 @@
+# Pd under thermal noise with Swerling-3 target fluctuations.
+# Swerling-3: slow fluctuation (constant over CPI), different amplitude statistics than Swerling-1.
+
+execution:
+  mode: model_based
+
+assumptions:
+  - "Thermal-noise-limited receiver (no clutter, no interference)."
+  - "Target RCS follows Swerling-3 (slow fluctuation: constant over CPI, varies between looks)."
+  - "Pd reported is expectation over RCS fluctuation statistics and noise."
+
+radar:
+  fc_hz: 9.5e9
+  tx_power_w: 2000.0
+  prf_hz: 2000.0
+  duty_cycle: 0.10
+
+antenna:
+  gain_tx_db: 32.0
+  gain_rx_db: 32.0
+
+receiver:
+  bw_hz: 2.0e6
+  nf_db: 4.5
+  temperature_k: 290.0
+
+target:
+  rcs_sqm: 1.0
+  fluctuation: swerling3
+
+environment:
+  system_losses_db: 6.0
+
+detection:
+  pfa: 1.0e-6
+  n_pulses: 16
+  integration: noncoherent
+
+metrics:
+  ranges_m: [5000, 10000, 15000, 20000, 25000, 30000, 35000, 40000]
+
+geometry:
+  n_range_bins: 128
+  n_doppler_bins: 64
+  beams_per_scan: 8
+  n_cpi_per_dwell: 1
