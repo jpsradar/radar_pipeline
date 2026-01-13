@@ -1,0 +1,32 @@
+# Same as *_both, but heterogeneity applies to CUT only -> intentional homogeneity violation.
+
+execution:
+  mode: monte_carlo
+
+assumptions:
+  - "Power-domain Monte Carlo (background is a power RV)."
+  - "Noncoherent integration in power domain across pulses."
+  - "Heterogeneity enabled and applied to CUT only (homogeneity violated; CFAR expected to break)."
+  - "For Pd, CUT scaling is applied to the entire CUT measurement (background+signal), keeping instantaneous SNR invariant."
+
+monte_carlo:
+  task: pd
+  pfa: 1.0e-6
+  n_trials: 200000
+  detector: ca_cfar_independent
+  n_ref: 32
+
+  background:
+    model: exponential
+    mean_power: 1.0
+    hetero:
+      enabled: true
+      mode: multiply
+      apply_to: cut
+      mean_multiplier: 3.0
+
+  pd:
+    snr_db: 10.0
+    n_pulses: 16
+    integration: noncoherent
+    swerling: swerling0

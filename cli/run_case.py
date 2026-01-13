@@ -9,7 +9,7 @@ This file is the "orchestrator" for a single runnable case:
 - Load + validate a case config (schema-driven)
 - Resolve engine selection (explicit or auto)
 - Derive a stable run identity (case stem + engine + seed + config hash)
-- Write provenance artifacts (manifest + metrics + optional HTML report)
+- Write provenance artifacts (case_manifest + manifest + metrics + optional HTML report)
 
 This module MUST remain boring and deterministic.
 It should not implement radar math; it only wires contracts and I/O.
@@ -20,19 +20,20 @@ To prevent "it ran but we don't know what it meant", every run MUST persist a
 human-auditable execution contract into outputs.
 
 We enforce and persist:
-- mode:   the resolved engine actually executed ("model_based" | "monte_carlo" | "signal_level")
-- seed:   the integer seed actually used (user-provided or derived)
-- assumptions: the engineering assumptions declared in the case config
+- mode:        resolved engine actually executed ("model_based" | "monte_carlo" | "signal_level")
+- seed:        integer seed actually used
+- assumptions: engineering assumptions declared in the case config
+- validity:    minimal validity contract (stat model / clutter regime / limits)
 
 Where it is written:
-- metrics.json        : top-level "execution" block (always present)
-- case_manifest.json  : includes seed + extras; metrics mirrors execution for consumers
+- metrics.json       : top-level "execution" block (always present)
+- case_manifest.json : richer provenance (already in repo)
+- manifest.json      : minimal, standardized contract for external readers
 
 Engine/config consistency
 -------------------------
 If the case config declares execution.mode, we require it to match the resolved engine
-(we do NOT silently switch meaning). This prevents accidental mismatches between config
-intent and CLI invocation.
+(we do NOT silently switch meaning).
 
 Path redaction
 --------------
@@ -45,12 +46,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from core.config.loaders import ConfigError, LoadOptions, load_case
 from core.config.manifest import compute_config_hash, write_case_manifest
+from core.runtime.manifest import write_manifest
 
 
 # ---------------------------------------------------------------------
@@ -91,7 +94,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--out", default="results/cases", help="Base output dir (default: results/cases).")
 
     parser.add_argument("--name", default=None, help="Optional display name (report title only).")
-    parser.add_argument("--seed", type=int, default=None, help="Optional RNG seed (default: derived from config).")
+
+    # IMPORTANT: --seed remains optional; if not provided, we will use $SEED if set,
+    # otherwise derive from config hash.
+    parser.add_argument("--seed", type=int, default=None, help="Optional RNG seed (overrides $SEED).")
+
     parser.add_argument("--schema-dir", default="configs/schemas", help="Schema folder (default: configs/schemas).")
     parser.add_argument("--schema", default="case.schema.json", help="Schema filename (default: case.schema.json).")
 
@@ -127,6 +134,20 @@ def _derive_seed(config_hash: str) -> int:
     return int(config_hash[:8], 16) % (2**31 - 1)
 
 
+def _seed_from_env() -> Optional[int]:
+    """
+    Read SEED from environment if present and valid.
+    Returns None if unset/invalid.
+    """
+    raw = os.environ.get("SEED", "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except Exception:
+        return None
+
+
 def _ensure_empty_dir(path: Path, *, overwrite: bool) -> None:
     """
     Ensure output directory exists and is safe to write into.
@@ -154,11 +175,6 @@ def _write_json(path: Path, payload: Dict[str, Any]) -> None:
 def _get_cfg_execution_mode(cfg: Dict[str, Any]) -> Optional[str]:
     """
     Read cfg.execution.mode if present.
-
-    Returns
-    -------
-    str | None
-        Lowercased mode string, or None if not present.
     """
     ex = cfg.get("execution", None)
     if not isinstance(ex, dict):
@@ -172,9 +188,6 @@ def _get_cfg_execution_mode(cfg: Dict[str, Any]) -> Optional[str]:
 def _get_cfg_assumptions(cfg: Dict[str, Any]) -> List[str]:
     """
     Read cfg.assumptions as a list of strings.
-
-    The schema normally enforces this, but we keep this resilient because
-    this function is part of the CLI contract layer.
     """
     raw = cfg.get("assumptions", None)
     if raw is None:
@@ -192,8 +205,6 @@ def _get_cfg_assumptions(cfg: Dict[str, Any]) -> List[str]:
 def _assert_engine_matches_execution_mode(*, engine_selected: str, cfg_mode: Optional[str]) -> None:
     """
     Enforce that cfg.execution.mode (if declared) matches the resolved engine.
-
-    We do NOT silently reinterpret the config; mismatches must fail loudly.
     """
     if cfg_mode is None:
         return
@@ -215,9 +226,6 @@ def _inject_execution_contract(
 ) -> Dict[str, Any]:
     """
     Inject a mandatory, top-level execution contract into metrics.
-
-    This keeps consumers (reports/validation) from depending on CLI internals
-    or manifest parsing for the most important provenance fields.
     """
     metrics_out = dict(metrics)
     metrics_out["execution"] = {
@@ -226,6 +234,36 @@ def _inject_execution_contract(
         "assumptions": assumptions if assumptions else ["unspecified"],
     }
     return metrics_out
+
+
+def _infer_validity(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Minimal validity contract inference from config.
+    Conservative and human-auditable.
+    """
+    stat_model = "unknown"
+    clutter = "none"
+
+    mc = cfg.get("monte_carlo", {}) if isinstance(cfg.get("monte_carlo", None), dict) else {}
+    bg = mc.get("background", {}) if isinstance(mc.get("background", None), dict) else {}
+
+    if bg:
+        if "model" in bg:
+            stat_model = str(bg.get("model"))
+        hetero = bg.get("hetero", {})
+        if isinstance(hetero, dict) and bool(hetero.get("enabled", False)):
+            clutter = "heterogeneous"
+        else:
+            clutter = "homogeneous"
+
+    return {
+        "stat_model": stat_model,
+        "clutter": clutter,
+        "limits": [
+            "assumptions are as-declared in case YAML",
+            "validity is scenario-dependent",
+        ],
+    }
 
 
 # ---------------------------------------------------------------------
@@ -238,19 +276,14 @@ def _run_engine(engine: str, cfg: Dict[str, Any], seed: int) -> Dict[str, Any]:
 
     if engine_n == "model_based":
         from core.simulation.model_based import run_model_based_case  # type: ignore
-
         return run_model_based_case(cfg=cfg, seed=seed)
 
     if engine_n == "monte_carlo":
-        # IMPORTANT: new unified entrypoint supports task=pfa|pd|pfa_pd,
-        # but remains backward compatible (default task is pfa).
         from core.simulation.monte_carlo import run_monte_carlo  # type: ignore
-
         return run_monte_carlo(cfg=cfg, seed=seed)
 
     if engine_n == "signal_level":
         from core.simulation.signal_level import run_signal_level_case  # type: ignore
-
         return run_signal_level_case(cfg=cfg, seed=seed)
 
     raise ValueError(f"Unknown engine: {engine}")
@@ -260,22 +293,19 @@ def _write_html_report(out_dir: Path, title: str | None = None) -> None:
     """
     Generate report.html for a single case directory.
 
-    Note
-    ----
     Report generation is a pure post-process; it should not rerun simulations.
     """
     from reports.case_generators import generate_case_report_html  # type: ignore
 
-    case_dir = out_dir
-    metrics_path = case_dir / "metrics.json"
-    manifest_path = case_dir / "case_manifest.json"
+    metrics_path = out_dir / "metrics.json"
+    manifest_path = out_dir / "case_manifest.json"
     manifest_arg = manifest_path if manifest_path.exists() else None
 
     generate_case_report_html(
-        case_dir=case_dir,
+        case_dir=out_dir,
         metrics_path=metrics_path,
         manifest_path=manifest_arg,
-        out_dir=case_dir,
+        out_dir=out_dir,
         title=title,
     )
 
@@ -283,9 +313,6 @@ def _write_html_report(out_dir: Path, title: str | None = None) -> None:
 def _pretty_path(path: Path, project_root: Path) -> str:
     """
     Render a path without leaking absolute filesystem locations.
-
-    - If path is inside project_root: show as ${PROJECT_ROOT}/...
-    - Else: show only the basename.
     """
     try:
         rel = path.resolve().relative_to(project_root.resolve())
@@ -301,13 +328,12 @@ def _pretty_path(path: Path, project_root: Path) -> str:
 
 def main() -> int:
     args = _parse_args()
-
     project_root = Path.cwd().resolve()
 
     case_path = Path(args.case)
     out_base = Path(args.out)
 
-    # ---- Load + validate config (schema-driven) ----
+    # ---- Load + validate config ----
     try:
         cfg = load_case(
             case_path,
@@ -333,7 +359,22 @@ def main() -> int:
 
     # ---- Compute stable run identity ----
     cfg_hash = compute_config_hash(cfg, project_root=project_root)
-    seed = int(args.seed) if args.seed is not None else _derive_seed(cfg_hash)
+
+    # Seed precedence:
+    #   1) --seed (explicit)
+    #   2) $SEED (runner-wide deterministic tag)
+    #   3) derived from config hash (stable fallback)
+    if args.seed is not None:
+        seed = int(args.seed)
+        seed_source = "user"
+    else:
+        env_seed = _seed_from_env()
+        if env_seed is not None:
+            seed = int(env_seed)
+            seed_source = "env(SEED)"
+        else:
+            seed = _derive_seed(cfg_hash)
+            seed_source = "derived_from_config_hash"
 
     ident = RunIdentity(case_stem=case_path.stem, engine=selected_engine, seed=seed, config_hash=cfg_hash)
     out_dir = (out_base / ident.run_id).resolve()
@@ -346,14 +387,14 @@ def main() -> int:
         print(f"[ERROR] {msg}")
         return 4
 
-    # ---- Write manifest (provenance) ----
+    # ---- Write case_manifest.json (repo-native provenance) ----
     extras = {
         "cli_args": vars(args),
         "output_dir": str(Path(args.out) / ident.run_id),
         "engine_requested": args.engine,
         "engine_selected": selected_engine,
         "run_id": ident.run_id,
-        "seed_source": "user" if args.seed is not None else "derived_from_config_hash",
+        "seed_source": seed_source,
         "display_name": args.name or "",
         "execution_mode_declared": cfg_mode or "",
         "assumptions_declared": _get_cfg_assumptions(cfg),
@@ -371,7 +412,7 @@ def main() -> int:
         print(f"[ERROR] Failed to write case_manifest.json: {exc}")
         return 5
 
-    # ---- Run engine + write metrics ----
+    # ---- Run engine + write metrics (+ execution contract) ----
     try:
         metrics = _run_engine(selected_engine, cfg, seed=seed)
 
@@ -384,6 +425,17 @@ def main() -> int:
         )
 
         _write_json(out_dir / "metrics.json", metrics)
+
+        # ---- Write standardized manifest.json ----
+        write_manifest(
+            out_dir=out_dir,
+            cfg=cfg,
+            execution_mode=str(selected_engine).lower().strip(),
+            seed=int(seed),
+            assumptions=assumptions,
+            validity=_infer_validity(cfg),
+        )
+
     except Exception as exc:
         print(f"[ERROR] Engine run failed: {exc}")
         return 6

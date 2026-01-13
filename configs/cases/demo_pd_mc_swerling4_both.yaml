@@ -1,0 +1,29 @@
+execution:
+  mode: monte_carlo
+
+assumptions:
+  - "Thermal-noise power model (exponential)."
+  - "Swerling-4 fast fluctuation (gamma k=2 multiplier per pulse)."
+  - "Heterogeneity enabled (apply_to=both): scale-invariant CFAR expected."
+
+monte_carlo:
+  task: pd
+  pfa: 1.0e-6
+  n_trials: 200000
+  detector: ca_cfar_independent
+  n_ref: 32
+
+  background:
+    model: exponential
+    mean_power: 1.0
+    hetero:
+      enabled: true
+      mode: multiply
+      apply_to: both
+      mean_multiplier: 3.0
+
+  pd:
+    snr_db: 10.0
+    n_pulses: 16
+    integration: noncoherent
+    swerling: swerling4
