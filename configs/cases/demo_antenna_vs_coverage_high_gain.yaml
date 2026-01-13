@@ -1,6 +1,6 @@
 # configs/cases/demo_antenna_vs_coverage_high_gain.yaml
 #
-# Phase 2 trade-off demo (coverage/revisit vs link budget):
+# Trade-off demo (coverage/revisit vs link budget):
 # HIGH antenna gain => better SNR/Pd but slower scan (worse revisit).
 #
 # Engineering story

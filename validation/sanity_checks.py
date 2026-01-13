@@ -145,7 +145,7 @@ def run_all_checks(*, full: bool, seed: int) -> None:
     """
     print(f"[INFO] Running sanity checks (full={full}, seed={seed})")
 
-    # 0) End-to-end CLI contract checks (this is what keeps phase-1 honest)
+    # 0) End-to-end CLI contract checks (guards CLI/schema/metrics contracts)
     _check_end_to_end_case_contracts(seed=seed)
 
     # 1) In-memory math checks
@@ -217,7 +217,7 @@ def _load_metrics(run_dir: Path) -> Dict[str, Any]:
 
 def _check_end_to_end_case_contracts(*, seed: int) -> None:
     """
-    End-to-end contract enforcement (Phase 1 gates).
+    End-to-end contract enforcement (CI gate / contract checks).
 
     This ensures:
     - schema resolution works

@@ -1,12 +1,12 @@
 """
 aux_scripts/sweep_integration_vs_far.py
 
-Reproducible Phase-2 trade-off sweep (NO notebooks):
+Reproducible trade-off sweep (NO notebooks):
 Integration (N pulses) vs system false-alarm rate (FAR) and Pd.
 
 Why this script exists
 ----------------------
-Phase 2 requires trade-offs to be demonstrated in a way that is:
+This repo requires trade-offs to be demonstrated in a way that is:
 - deterministic (seeded, commit-stable)
 - automation-friendly (single command, artifacts written to disk)
 - reportable (CSV + PNG plot + JSON summary)
@@ -85,7 +85,7 @@ class SweepIdentity:
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="sweep_integration_vs_far",
-        description="Phase-2 trade-off sweep: integration pulses N vs FAR/s and Pd (model_based).",
+        description="Trade-off sweep: integration pulses N vs FAR/s and Pd (model_based).",
     )
     p.add_argument("--case", required=True, help="Base case YAML/JSON (performance_case).")
     p.add_argument("--seed", type=int, default=123, help="Deterministic seed tag (default: 123).")

@@ -1,6 +1,6 @@
 # configs/cases/demo_integration_vs_far_n1.yaml
 #
-# Phase 2.1 canonical trade-off:
+# Canonical trade-off:
 # Integration (N pulses) vs system-level FAR (per second) given a fixed RD grid.
 #
 # Design intent

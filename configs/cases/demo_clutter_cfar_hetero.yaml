@@ -2,7 +2,7 @@
 #
 # End-to-end Monte Carlo demo (heterogeneous background that BREAKS CA-CFAR on purpose).
 #
-# Why this exists (Phase 2 trade-off)
+# Why this exists (trade-off demo)
 # -----------------------------------
 # CA-CFAR has a famous property: it is scale-invariant if the CUT and the reference
 # window are scaled together. That means:
