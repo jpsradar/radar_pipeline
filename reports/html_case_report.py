@@ -5,24 +5,25 @@ Self-contained HTML report generator for a single case run.
 
 Purpose
 -------
-Generate a human-readable, reader-facing HTML artifact for one run directory:
-- explains what was simulated (inputs, assumptions, definitions)
-- summarizes key results (range, Pd/Pfa, FAR)
-- highlights engineering drivers and warnings
-- shows plots (embedded) and tables (readable)
-- keeps reproducibility data in a collapsible appendix (manifest + metrics JSON)
+Generate a single-file HTML report (report.html) for a run directory. The report is
+intended for engineering review and traceability:
 
-Key design constraints
-----------------------
-- Single-file output: report.html is standalone (no external JS/CSS, no relative image paths).
-- No absolute paths are emitted. Any paths shown are repo-relative when possible.
-- Deterministic formatting (stable ordering, stable rounding).
+- Summarize what was executed (engine, seed, case source when available).
+- Present key outputs (SNR span, detection summary, FAR/trials when present).
+- Surface operationally relevant warnings derived strictly from available fields.
+- Embed plots (optional) and include reproducibility appendix (metrics + manifest).
+
+Design constraints
+------------------
+- Standalone output: no external CSS/JS dependencies and no relative image paths.
+- Path hygiene: never emit absolute paths; show repo-relative or tail-only text.
+- Deterministic formatting: stable ordering and stable rounding to minimize diffs.
 
 Inputs
 ------
-- metrics: dict loaded from <run_dir>/metrics.json
-- manifest: dict loaded from <run_dir>/case_manifest.json (optional but recommended)
-- plots: optional mapping {name: png_bytes} to embed charts as base64
+- metrics: dict loaded from <run_dir>/metrics.json (required)
+- manifest: dict loaded from <run_dir>/case_manifest.json (optional)
+- plots: mapping {name: png_bytes} to embed charts as base64 (optional)
 
 Outputs
 -------
@@ -30,7 +31,7 @@ Outputs
 
 Dependencies
 ------------
-- Python standard library only (json, math, base64, datetime)
+- Python standard library only (base64, json, math, datetime)
 
 Usage
 -----
@@ -38,32 +39,45 @@ from pathlib import Path
 import json
 from reports.html_case_report import render_case_report_html, read_optional_json
 
-run_dir = Path("results/cases/demo_pd_noise__20260111T153405Z")
-metrics = json.loads((run_dir/"metrics.json").read_text())
-manifest = read_optional_json(run_dir/"case_manifest.json")
-html = render_case_report_html(
-    metrics=metrics,
-    manifest=manifest,
-    plots={},  # optional: {"pd_vs_range.png": (run_dir/"plots/pd_vs_range.png").read_bytes()}
-    title="Radar Case Report"
-)
-(run_dir/"report.html").write_text(html, encoding="utf-8")
+run_dir = Path("results/cases/<run_id>")
+metrics = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
+manifest = read_optional_json(run_dir / "case_manifest.json")
+html = render_case_report_html(metrics=metrics, manifest=manifest, plots={}, title="Radar Case Report")
+(run_dir / "report.html").write_text(html, encoding="utf-8")
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Mapping
 import base64
+import datetime as _dt
 import json
 import math
-import datetime as _dt
+from typing import Any, Dict, Mapping, Optional
+
+
+# ---------------------------------------------------------------------
+# I/O helpers
+# ---------------------------------------------------------------------
 
 
 def read_optional_json(path) -> Optional[Dict[str, Any]]:
+    """
+    Best-effort JSON reader.
+
+    Returns None if:
+    - file does not exist
+    - JSON is invalid
+    - read fails for any reason
+    """
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------
+# Formatting / safety utilities
+# ---------------------------------------------------------------------
 
 
 def _isfinite(x: Any) -> bool:
@@ -74,15 +88,21 @@ def _isfinite(x: Any) -> bool:
 
 
 def _fmt(x: Any, *, ndp: int = 3) -> str:
+    """
+    Stable numeric formatting for HTML.
+
+    - ints are shown without decimals
+    - floats use fixed-point unless very small/large, then scientific notation
+    - None is rendered as an em dash
+    """
     if x is None:
         return "—"
     if isinstance(x, bool):
         return "true" if x else "false"
-    if isinstance(x, (int,)):
+    if isinstance(x, int):
         return str(x)
     if _isfinite(x):
         v = float(x)
-        # Use scientific for very small/large values
         if v != 0.0 and (abs(v) < 1e-3 or abs(v) >= 1e6):
             return f"{v:.{ndp}e}"
         return f"{v:.{ndp}f}".rstrip("0").rstrip(".")
@@ -100,25 +120,40 @@ def _json_pretty(obj: Any) -> str:
 
 def _safe_relpath_text(path_str: Optional[str]) -> str:
     """
-    Never leak absolute paths. If we can't confidently make it relative, show only basename-ish text.
+    Render a path without leaking absolute locations.
+
+    Policy
+    ------
+    - If the string looks like it contains user-home prefixes, keep only a short tail.
+    - If already relative-ish, keep it.
+    - If absolute and unknown, keep only a short tail.
+
+    This is an intentionally conservative sanitizer: it prefers omission over leakage.
     """
     if not path_str:
         return "—"
     s = str(path_str).replace("\\", "/")
-    # Heuristic: strip user home-like prefixes
+
+    # Common home-like prefixes.
     for marker in ("/Users/", "/home/", "C:/Users/"):
         if marker in s:
-            # keep tail after last two folders if possible
             parts = [p for p in s.split("/") if p]
             if len(parts) >= 3:
                 return "/".join(parts[-3:])
             return parts[-1] if parts else "—"
-    # If it's already relative-ish, keep it
+
+    # Relative-ish path: safe to show.
     if not s.startswith("/"):
         return s
-    # Absolute but unknown: show tail only
+
+    # Absolute but unknown: show short tail only.
     parts = [p for p in s.split("/") if p]
     return "/".join(parts[-3:]) if len(parts) >= 3 else (parts[-1] if parts else "—")
+
+
+# ---------------------------------------------------------------------
+# Metric extraction (stdlib-only, conservative)
+# ---------------------------------------------------------------------
 
 
 def _engine(metrics: Dict[str, Any]) -> str:
@@ -126,10 +161,73 @@ def _engine(metrics: Dict[str, Any]) -> str:
     return str(e) if isinstance(e, str) else "unknown"
 
 
+def _extract_ranges_m(metrics: Dict[str, Any]) -> Optional[list[float]]:
+    raw = metrics.get("ranges_m")
+    if not isinstance(raw, list) or not raw:
+        return None
+    out: list[float] = []
+    for x in raw:
+        try:
+            v = float(x)
+        except Exception:
+            return None
+        if not math.isfinite(v):
+            return None
+        out.append(v)
+    return out
+
+
+def _extract_pd_curve(metrics: Dict[str, Any]) -> Optional[list[float]]:
+    det = metrics.get("detection")
+    if not isinstance(det, dict):
+        return None
+    raw = det.get("pd")
+    if not isinstance(raw, list) or not raw:
+        return None
+    out: list[float] = []
+    for x in raw:
+        try:
+            v = float(x)
+        except Exception:
+            return None
+        if not math.isfinite(v):
+            return None
+        out.append(v)
+    return out
+
+
+def _range_at_pd(metrics: Dict[str, Any], *, pd_min: float) -> Optional[float]:
+    """
+    Maximum range where Pd >= pd_min, using the provided (ranges_m, detection.pd).
+
+    - Returns None if the curve is missing, malformed, length-mismatched,
+      or the threshold is never reached.
+    - Does not interpolate or extrapolate; this is a grid-based query.
+    """
+    thr = float(pd_min)
+    if not math.isfinite(thr) or thr <= 0.0 or thr > 1.0:
+        raise ValueError(f"pd_min must be in (0,1], got {pd_min!r}")
+
+    r = _extract_ranges_m(metrics)
+    p = _extract_pd_curve(metrics)
+    if not r or not p or len(r) != len(p):
+        return None
+
+    ok = [rv for rv, pv in zip(r, p) if pv >= thr]
+    return max(ok) if ok else None
+
+
+# ---------------------------------------------------------------------
+# Summary + warnings (no guessing; fields must exist)
+# ---------------------------------------------------------------------
+
+
 def _extract_case_summary(metrics: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Extract a compact run summary strictly from available fields.
+    """
     eng = _engine(metrics)
 
-    # Common across engines (best-effort, no guessing)
     ranges_m = metrics.get("ranges_m") if isinstance(metrics.get("ranges_m"), list) else None
     snr_db = metrics.get("snr_db") if isinstance(metrics.get("snr_db"), list) else None
     det = metrics.get("detection") if isinstance(metrics.get("detection"), dict) else None
@@ -146,11 +244,19 @@ def _extract_case_summary(metrics: Dict[str, Any]) -> Dict[str, Any]:
     if det and isinstance(det.get("pd"), list) and det["pd"]:
         out["pd_at_first_range"] = float(det["pd"][0])
 
+    # FASE 5-style queries if a Pd curve is present
+    r90 = _range_at_pd(metrics, pd_min=0.90)
+    r80 = _range_at_pd(metrics, pd_min=0.80)
+    r50 = _range_at_pd(metrics, pd_min=0.50)
+    if r90 is not None or r80 is not None or r50 is not None:
+        out["range_at_pd_90_m"] = r90
+        out["range_at_pd_80_m"] = r80
+        out["range_at_pd_50_m"] = r50
+
     if far:
         out["far_per_second"] = far.get("per_second")
         out["far_per_scan"] = far.get("per_scan")
 
-    # signal_level extras
     if eng == "signal_level":
         rd = metrics.get("rd_grid") if isinstance(metrics.get("rd_grid"), dict) else None
         if rd:
@@ -161,27 +267,37 @@ def _extract_case_summary(metrics: Dict[str, Any]) -> Dict[str, Any]:
 
 def _engineering_warnings(metrics: Dict[str, Any]) -> list[str]:
     """
-    Produce explicit engineering warnings where the numbers imply operational absurdity.
-    No hidden heuristics: only if fields exist and are finite.
+    Emit warnings derived from explicit numeric fields.
+
+    This function does not infer hidden context or apply domain-specific heuristics
+    beyond simple thresholds on already-reported outputs.
     """
     warns: list[str] = []
+
+    # FAR: operational load risk if per-second rate is high.
     far = metrics.get("far") if isinstance(metrics.get("far"), dict) else None
     if far:
         ps = far.get("per_second")
         if _isfinite(ps):
             v = float(ps)
             if v >= 1.0:
-                warns.append(f"High false-alarm rate: FAR ≈ {_fmt(v, ndp=3)} / s (verify Pfa vs trials/sec).")
+                warns.append(f"High false-alarm load: FAR ≈ {_fmt(v, ndp=3)} / s (verify Pfa vs trials/sec).")
             elif v > 0.1:
-                warns.append(f"Non-trivial false-alarm rate: FAR ≈ {_fmt(v, ndp=3)} / s (may overload tracker/HMI).")
+                warns.append(f"Non-trivial false-alarm load: FAR ≈ {_fmt(v, ndp=3)} / s (may stress downstream processing).")
 
+    # Extremely strict Pfa: expected detection penalty unless compensated by processing gain.
     det = metrics.get("detection") if isinstance(metrics.get("detection"), dict) else None
     if det and _isfinite(det.get("pfa")):
         pfa = float(det["pfa"])
         if pfa < 1e-9:
-            warns.append("Very strict Pfa (<1e-9): expect significant detection loss unless processing gain is available.")
+            warns.append("Very strict Pfa (< 1e-9): expect detection loss unless processing gain is available.")
 
     return warns
+
+
+# ---------------------------------------------------------------------
+# Report rendering
+# ---------------------------------------------------------------------
 
 
 def render_case_report_html(
@@ -193,28 +309,12 @@ def render_case_report_html(
 ) -> str:
     """
     Render a complete self-contained HTML report for one run.
-
-    Parameters
-    ----------
-    metrics : dict
-        metrics.json content.
-    manifest : dict | None
-        case_manifest.json content (optional).
-    plots : mapping[str, bytes]
-        Optional PNG bytes to embed by name.
-    title : str
-        Report title.
-
-    Returns
-    -------
-    str
-        HTML document (standalone).
     """
     now = _dt.datetime.now(tz=_dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
     summary = _extract_case_summary(metrics)
     warns = _engineering_warnings(metrics)
 
-    # High-level “what was simulated” (best-effort from manifest)
+    # Best-effort provenance fields from manifest.
     case_src = None
     seed = None
     engine_selected = None
@@ -225,25 +325,27 @@ def render_case_report_html(
         if extras and isinstance(extras.get("engine_selected"), str):
             engine_selected = extras["engine_selected"]
 
-    # Assumptions section: show explicit engine assumptions when present
+    # Assumptions section: show explicit engine assumptions when present.
     assumptions = metrics.get("assumptions") if isinstance(metrics.get("assumptions"), dict) else {}
 
-    # Build plot cards
-    plot_cards = []
+    # Optional plots.
+    plot_cards: list[str] = []
     for name, png in plots.items():
         uri = _to_data_uri_png(png)
-        plot_cards.append(f"""
+        plot_cards.append(
+            f"""
           <div class="card">
             <h2>{name}</h2>
             <div class="imgwrap"><img src="{uri}" alt="{name}"/></div>
           </div>
-        """)
+        """.rstrip()
+        )
 
-    # Appendix JSON (collapsible)
-    manifest_json = _json_pretty(manifest) if isinstance(manifest, dict) else None
+    # Appendix JSON (collapsible).
     metrics_json = _json_pretty(metrics)
+    manifest_json = _json_pretty(manifest) if isinstance(manifest, dict) else None
 
-    # SNR budget table (only if present; no guessing)
+    # SNR budget table (only if present; no guessing).
     snr_budget = metrics.get("snr_budget") if isinstance(metrics.get("snr_budget"), dict) else None
 
     def snr_budget_table_html() -> str:
@@ -257,7 +359,9 @@ def render_case_report_html(
             v_lin = blk.get("value_lin")
             v_db = blk.get("value_db")
             notes = blk.get("notes", "")
-            rows.append(f"<tr><td class='mono'>{k}</td><td>{_fmt(v_lin)}</td><td>{_fmt(v_db)}</td><td>{notes}</td></tr>")
+            rows.append(
+                f"<tr><td class='mono'>{k}</td><td>{_fmt(v_lin)}</td><td>{_fmt(v_db)}</td><td>{notes}</td></tr>"
+            )
         if not rows:
             return "<div class='muted'>SNR budget present but empty.</div>"
         return f"""
@@ -267,28 +371,49 @@ def render_case_report_html(
               {''.join(rows)}
             </tbody>
           </table>
-        """
+        """.rstrip()
 
-    # Detection performance (only if present)
     def detection_section_html() -> str:
         det = metrics.get("detection") if isinstance(metrics.get("detection"), dict) else None
         if not det:
             return "<div class='muted'>No detection model output found for this engine.</div>"
-        lines = []
+
+        lines: list[str] = []
+
         if _isfinite(det.get("pfa")):
             lines.append(f"<li><b>Pfa:</b> {_fmt(det.get('pfa'), ndp=6)}</li>")
+
+        # If a Pd curve exists, expose both a point and threshold-range queries.
         if isinstance(det.get("pd"), list) and det["pd"]:
             pd0 = det["pd"][0]
             lines.append(f"<li><b>Pd@first range:</b> {_fmt(pd0, ndp=6)}</li>")
+
+            r90 = _range_at_pd(metrics, pd_min=0.90)
+            r80 = _range_at_pd(metrics, pd_min=0.80)
+            r50 = _range_at_pd(metrics, pd_min=0.50)
+
+            if r90 is not None:
+                lines.append(f"<li><b>Range @ Pd≥0.90:</b> {_fmt(r90, ndp=0)} m</li>")
+            if r80 is not None:
+                lines.append(f"<li><b>Range @ Pd≥0.80:</b> {_fmt(r80, ndp=0)} m</li>")
+            if r50 is not None:
+                lines.append(f"<li><b>Range @ Pd≥0.50:</b> {_fmt(r50, ndp=0)} m</li>")
+
+            if r90 is None and r80 is None and r50 is None:
+                lines.append(
+                    "<li class='muted'>Pd curve present but does not reach 0.50/0.80/0.90 on the provided range grid.</li>"
+                )
+
         if _isfinite(det.get("snr_threshold_db")):
             lines.append(f"<li><b>Equivalent threshold (SNR_dt):</b> {_fmt(det.get('snr_threshold_db'))} dB</li>")
+
         return f"<ul>{''.join(lines) if lines else '<li class=muted>Detection fields present but incomplete.</li>'}</ul>"
 
-    # False alarms section
     def far_section_html() -> str:
         far = metrics.get("far") if isinstance(metrics.get("far"), dict) else None
         trials = metrics.get("trials") if isinstance(metrics.get("trials"), dict) else None
-        parts = []
+        parts: list[str] = []
+
         if trials:
             cs = trials.get("cells_per_second")
             cscan = trials.get("cells_per_scan")
@@ -299,6 +424,7 @@ def render_case_report_html(
                 if _isfinite(cscan):
                     parts.append(f"<li><b>cells/scan:</b> {_fmt(cscan)}</li>")
                 parts.append("</ul>")
+
         if far:
             ps = far.get("per_second")
             pscan = far.get("per_scan")
@@ -308,11 +434,11 @@ def render_case_report_html(
             if _isfinite(pscan):
                 parts.append(f"<li><b>FAR/scan:</b> {_fmt(pscan)}</li>")
             parts.append("</ul>")
+
         if not parts:
             return "<div class='muted'>No FAR/trials outputs found in metrics for this engine.</div>"
         return "".join(parts)
 
-    # Assumptions & definitions
     def assumptions_html() -> str:
         if not isinstance(assumptions, dict) or not assumptions:
             return "<div class='muted'>No explicit assumptions block found.</div>"
@@ -321,21 +447,33 @@ def render_case_report_html(
             items.append(f"<li><span class='mono'>{k}</span>: <b>{_fmt(assumptions[k])}</b></li>")
         return f"<ul>{''.join(items)}</ul>"
 
-    # Top drivers: only what we can justify from existing fields
     def top_drivers_html() -> str:
-        drivers = []
-        # If noise_model exists, point to NF/BW as likely sensitivity knobs (without claiming dominance)
+        """
+        Present driver notes only when supported by structured fields.
+
+        This section is intentionally conservative: it avoids claiming dominance
+        without explicit attribution in the metrics payload.
+        """
+        drivers: list[str] = []
+
         nm = metrics.get("noise_model") if isinstance(metrics.get("noise_model"), dict) else None
         if nm and _isfinite(nm.get("noise_power_dbw")):
-            drivers.append("Noise floor is explicitly modeled; check BW and NF sensitivity in sweeps.")
+            drivers.append("Noise floor is explicitly reported; BW and NF are primary sensitivity knobs in noise-limited regimes.")
+
         env = metrics.get("environment") if isinstance(metrics.get("environment"), dict) else None
         if env and _isfinite(env.get("system_losses_db")):
-            drivers.append("System losses are applied; losses directly reduce SNR and range.")
+            drivers.append("System losses are applied; losses reduce SNR and therefore reduce achievable range.")
+
         if not drivers:
             return "<div class='muted'>Not enough structured fields to attribute drivers (add snr_budget / trials blocks to metrics).</div>"
         return "<ul>" + "".join([f"<li>{d}</li>" for d in drivers]) + "</ul>"
 
     src_txt = _safe_relpath_text(str(case_src) if case_src else None)
+
+    warn_block = ""
+    if warns:
+        warn_items = "".join([f"<li>{w}</li>" for w in warns])
+        warn_block = f"<div class='card warn'><h2>Engineering Warnings</h2><ul>{warn_items}</ul></div>"
 
     return f"""<!doctype html>
 <html>
@@ -345,10 +483,11 @@ def render_case_report_html(
   <title>{title}</title>
   <style>
     :root {{
-      --fg:#111; --muted:#666; --bg:#fff; --card:#fff; --border:#e3e5e8; --head:#f6f7f9; --hl:#fcfcff;
+      --fg:#111; --muted:#666; --bg:#fff; --card:#fff; --border:#e3e5e8; --head:#f6f7f9;
       --warnbg:#fff6f6; --warnbd:#ffd2d2;
     }}
-    body {{ margin: 18px; font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color:var(--fg); background:var(--bg); line-height:1.42; }}
+    body {{ margin: 18px; font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+           color:var(--fg); background:var(--bg); line-height:1.42; }}
     .topbar {{ display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:14px; max-width: 1120px; }}
     .title h1 {{ margin:0; font-size:1.35rem; }}
     .muted {{ color:var(--muted); font-size:0.95rem; }}
@@ -391,18 +530,19 @@ def render_case_report_html(
     <div class="card">
       <h2>Executive Summary</h2>
       <ul>
-        <li><b>What was simulated:</b> engine <span class="mono">{_fmt(summary.get("engine"))}</span> using the current case configuration.</li>
-        <li><b>Key results:</b>
+        <li><b>Execution:</b> engine <span class="mono">{_fmt(summary.get("engine"))}</span> using the current case configuration.</li>
+        <li><b>Key outputs (when present):</b>
           <span class="mono">SNR span</span> {_fmt(summary.get("snr_span_db")[0] if isinstance(summary.get("snr_span_db"), tuple) else None)}…{_fmt(summary.get("snr_span_db")[1] if isinstance(summary.get("snr_span_db"), tuple) else None)} dB,
           <span class="mono">FAR/sec</span> {_fmt(summary.get("far_per_second"), ndp=6)},
           <span class="mono">Pfa</span> {_fmt(summary.get("pfa"), ndp=6)}.
         </li>
       </ul>
-      <h3>Top drivers (from structured fields)</h3>
+
+      <h3>Driver notes (from structured fields)</h3>
       {top_drivers_html()}
     </div>
 
-    {"".join([f"<div class='card warn'><h2>Engineering Warnings</h2><ul>{''.join([f'<li>{w}</li>' for w in warns])}</ul></div>" for _ in ([0] if warns else [])])}
+    {warn_block}
 
     <div class="card">
       <h2>Assumptions & Definitions</h2>
@@ -429,11 +569,11 @@ def render_case_report_html(
     <div class="card">
       <h2>Appendix</h2>
       <details>
-        <summary>metrics.json (for reproducibility)</summary>
+        <summary>metrics.json (reproducibility)</summary>
         <pre class="mono">{metrics_json}</pre>
       </details>
       <details style="margin-top:10px;">
-        <summary>case_manifest.json (for reproducibility)</summary>
+        <summary>case_manifest.json (reproducibility)</summary>
         <pre class="mono">{manifest_json if manifest_json is not None else "—"}</pre>
       </details>
     </div>
