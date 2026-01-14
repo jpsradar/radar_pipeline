@@ -139,6 +139,39 @@ The pipeline is intended as an upstream analysis and reasoning tool.
 
 ---
 
+## Where this pipeline fails (by design)
+
+This repository intentionally exposes regimes where common radar assumptions break.
+These are not implementation bugs; they are the primary signals used for engineering judgment.
+
+Known and documented failure modes include:
+
+- **CFAR under heterogeneous clutter**  
+  CA-CFAR does not maintain the requested Pfa in heterogeneous environments.
+  This behavior is preserved and made visible through Monte Carlo validation and
+  comparison against alternative detectors (e.g., OS-CFAR).
+
+- **Analytic Pd vs Monte Carlo divergence**  
+  Closed-form detection models diverge from empirical results at low SNR,
+  high target fluctuation regimes (Swerling cases), and near threshold.
+  These discrepancies are measured, reported, and gated in CI rather than hidden.
+
+- **Pfa is not an operational metric by itself**  
+  A fixed Pfa does not determine system false-alarm load without explicit accounting
+  of trials per second (range cells × Doppler bins × beams × scan rate).
+  FAR inflation is demonstrated explicitly in integration and geometry trade-offs.
+
+- **Model validity is conditional**  
+  Results are only meaningful within the declared statistical and operational contracts
+  (noise model, clutter regime, stationarity, far-field assumptions).
+  Outside these limits, outputs are intentionally not guaranteed to be correct.
+
+The pipeline is designed to make these failures visible and reproducible,
+so that system-level decisions are driven by limits and trade-offs rather than by
+single-number performance claims.
+
+---
+
 ## Repository structure
 
 - `core/` — physics-based models (budgets, detection, geometry, environment)
