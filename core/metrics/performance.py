@@ -6,7 +6,7 @@ Performance reporting utilities for the radar pipeline (system-engineering grade
 Purpose
 -------
 This module converts raw engine outputs (e.g., model_based / monte_carlo / signal_level)
-into human-friendly, recruiter-ready artifacts:
+into human-friendly, report-ready artifacts:
 
 - A structured SNR budget breakdown (linear and dB) at one or more ranges.
 - Detection performance summaries: Pd(R) for multiple detector requirements.
@@ -60,10 +60,10 @@ Dependencies
     core.geometry.counts       (if present)
   but includes internal fallbacks so the file remains self-contained.
 
-Notes for "engineer-adult" reporting
+Notes for "engineering-grade" reporting
 -----------------------------------
 This module is intentionally verbose in its returned summary: it is meant to feed
-a recruiter-facing HTML report generator, not to be a minimal math helper.
+a reader-facing HTML report generator, not to be a minimal math helper.
 
 """
 
@@ -266,6 +266,160 @@ def build_snr_budget(
 
 
 # ---------------------------------------------------------------------
+# Metric extraction helpers (engine-agnostic, report-safe)
+# ---------------------------------------------------------------------
+
+def extract_ranges_m(metrics: Optional[Dict[str, Any]]) -> Optional[List[float]]:
+    """
+    Extract ranges_m from a metrics.json payload.
+
+    Supported conventions in this repo
+    ----------------------------------
+    - metrics["ranges_m"] : list[float]
+    - metrics["metrics"]["ranges_m"] : list[float] (older/alternate nesting)
+
+    Returns
+    -------
+    list[float] | None
+        None if ranges are absent or malformed.
+    """
+    if not isinstance(metrics, dict):
+        return None
+
+    raw = metrics.get("ranges_m", None)
+    if raw is None:
+        mblk = metrics.get("metrics", None)
+        if isinstance(mblk, dict):
+            raw = mblk.get("ranges_m", None)
+
+    if not isinstance(raw, list) or not raw:
+        return None
+
+    out: List[float] = []
+    for x in raw:
+        try:
+            v = float(x)
+        except Exception:
+            return None
+        if not math.isfinite(v):
+            return None
+        out.append(v)
+
+    return out
+
+
+def extract_pd_curve(metrics: Optional[Dict[str, Any]]) -> Optional[List[float]]:
+    """
+    Extract a Pd(R) curve from a metrics.json payload.
+
+    Supported conventions
+    ---------------------
+    - metrics["detection"]["pd"] : list[float]  (model_based outputs)
+    - (If the run is MC scalar Pd, we intentionally return None;
+       a scalar Pd does not define Pd vs range.)
+
+    Returns
+    -------
+    list[float] | None
+        None if absent or malformed.
+    """
+    if not isinstance(metrics, dict):
+        return None
+
+    det = metrics.get("detection", None)
+    if not isinstance(det, dict):
+        return None
+
+    pd = det.get("pd", None)
+    if not isinstance(pd, list) or not pd:
+        return None
+
+    out: List[float] = []
+    for x in pd:
+        try:
+            v = float(x)
+        except Exception:
+            return None
+        if not math.isfinite(v):
+            return None
+        out.append(v)
+
+    return out
+
+
+def range_at_pd(metrics: Optional[Dict[str, Any]], *, pd_min: float = 0.9) -> Optional[float]:
+    """
+    Return the maximum range (m) where Pd >= pd_min.
+
+    Notes
+    -----
+    - Uses extracted ranges + Pd curve.
+    - If Pd never reaches pd_min, returns None.
+    - If inputs are missing/mismatched lengths, returns None.
+    """
+    thr = float(pd_min)
+    if not math.isfinite(thr) or thr <= 0.0 or thr > 1.0:
+        raise ValueError(f"pd_min must be in (0,1], got {pd_min}")
+
+    r = extract_ranges_m(metrics)
+    p = extract_pd_curve(metrics)
+    if not r or not p or len(r) != len(p):
+        return None
+
+    ok = [rv for rv, pv in zip(r, p) if pv >= thr]
+    return max(ok) if ok else None
+
+
+def pd_at_range(metrics: Optional[Dict[str, Any]], *, range_m: float) -> Optional[float]:
+    """
+    Interpolate Pd at an arbitrary range.
+
+    Policy (deterministic, engineering-friendly)
+    --------------------------------------------
+    - If range matches a grid point: exact value.
+    - Else: linear interpolation between nearest neighbors in range.
+    - If range is outside the provided grid: None (do not extrapolate).
+
+    Returns
+    -------
+    float | None
+    """
+    xq = float(range_m)
+    if not math.isfinite(xq) or xq <= 0.0:
+        raise ValueError(f"range_m must be finite and > 0, got {range_m}")
+
+    r = extract_ranges_m(metrics)
+    p = extract_pd_curve(metrics)
+    if not r or not p or len(r) != len(p) or len(r) < 2:
+        return None
+
+    # Ensure monotone-in-range grid assumption (typical). If not sorted, sort pairs.
+    pairs = sorted(zip(r, p), key=lambda t: t[0])
+    r_s = [a for a, _ in pairs]
+    p_s = [b for _, b in pairs]
+
+    if xq < r_s[0] or xq > r_s[-1]:
+        return None
+
+    # exact hit
+    for rv, pv in zip(r_s, p_s):
+        if abs(rv - xq) <= 0.0:
+            return float(pv)
+
+    # find bracket
+    for i in range(len(r_s) - 1):
+        r0, r1 = r_s[i], r_s[i + 1]
+        if r0 <= xq <= r1:
+            p0, p1 = p_s[i], p_s[i + 1]
+            if r1 == r0:
+                return float(p0)
+            t = (xq - r0) / (r1 - r0)
+            return float(p0 + t * (p1 - p0))
+
+    return None
+
+
+# ---------------------------------------------------------------------
 # FAR counting (attempt model)
 # ---------------------------------------------------------------------
 
@@ -373,7 +527,7 @@ def far_from_pfa(cfg: Dict[str, Any], *, pfa: float) -> Dict[str, Any]:
 
 def build_performance_summary(cfg: Dict[str, Any], metrics: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
-    Build a recruiter-facing performance summary.
+    Build a reader-facing performance summary.
 
     This function returns a structured dict suitable for:
     - HTML rendering
@@ -410,24 +564,29 @@ def build_performance_summary(cfg: Dict[str, Any], metrics: Optional[Dict[str, A
     if isinstance(metrics, dict):
         engine = metrics.get("engine", None)
 
-    # Extract Pd(R) if present (model_based output convention in this repo).
+    # Extract Pd(R) if present.
     pd_block = None
     if isinstance(metrics, dict):
-        d = metrics.get("detection", None)
-        if isinstance(d, dict) and isinstance(d.get("pd", None), list):
+        pd_curve = extract_pd_curve(metrics)
+        m_ranges = extract_ranges_m(metrics)
+        if isinstance(pd_curve, list) and pd_curve:
             pd_block = {
-                "pd": [float(x) for x in d["pd"]],
-                "pfa": d.get("pfa", det.get("pfa", None)),
-                "integration": d.get("integration", det.get("integration", None)),
-                "n_pulses": d.get("n_pulses", det.get("n_pulses", None)),
+                "pd": [float(x) for x in pd_curve],
+                "ranges_m": [float(x) for x in m_ranges] if isinstance(m_ranges, list) else None,
+                "pfa": (metrics.get("detection", {}) or {}).get("pfa", det.get("pfa", None)),
+                "integration": (metrics.get("detection", {}) or {}).get("integration", det.get("integration", None)),
+                "n_pulses": (metrics.get("detection", {}) or {}).get("n_pulses", det.get("n_pulses", None)),
+                "range_at_pd_90_m": range_at_pd(metrics, pd_min=0.90),
+                "range_at_pd_80_m": range_at_pd(metrics, pd_min=0.80),
+                "range_at_pd_50_m": range_at_pd(metrics, pd_min=0.50),
             }
 
-    # Narrative bullets: the “adult engineer” layer.
+    # Narrative bullets: the “engineering-grade” layer.
     bullets: List[str] = []
     bullets.append("SNR budget is computed explicitly from the monostatic radar equation and k·T·B·F noise model.")
     if pfa is not None and far is not None and "far_per_second" in far:
         bullets.append(
-            f"False-alarm rate is not a vibe: FAR = Pfa × attempts/s ≈ {far['far_per_second']:.3g}/s "
+            f"False-alarm rate is not a constant: FAR = Pfa × attempts/s ≈ {far['far_per_second']:.3g}/s "
             f"for this scan/cell model."
         )
     bullets.append(
@@ -435,8 +594,7 @@ def build_performance_summary(cfg: Dict[str, Any], metrics: Optional[Dict[str, A
         "default is 10 km if neither is provided."
     )
     bullets.append(
-        "If recruiters read one thing: show what constitutes a trial (RD cell × Doppler bin × beam × scan rate) "
-        "and how that drives FAR."
+        "If a curve is present, report engineers' questions directly: range at Pd≥0.9/0.8/0.5, not just plots."
     )
 
     return {
@@ -499,7 +657,7 @@ def render_html_summary(summary: Dict[str, Any], *, title: str = "Radar Performa
     bullets = summary.get("narrative", {}).get("bullets", [])
     bullets_html = "<ul>" + "".join(f"<li>{esc(x)}</li>" for x in bullets) + "</ul>"
 
-    # Minimal CSS: readable, recruiter-friendly.
+    # Minimal CSS: readable, reader-friendly.
     css = """
     <style>
       body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, sans-serif; line-height: 1.35; }

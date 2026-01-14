@@ -20,7 +20,7 @@ V1 deliverables
 - Provide:
     (1) Pareto front computation (e.g., maximize range, minimize FAR)
     (2) Sensitivity estimates (finite-difference where possible)
-    (3) Report-ready tables (HTML fragment) to embed into recruiter-facing output
+    (3) Report-ready tables (HTML fragment) to embed into reader-facing output
 
 Inputs
 ------

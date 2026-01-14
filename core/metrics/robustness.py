@@ -13,7 +13,7 @@ This module audits metrics artifacts produced by the pipeline and answers:
 
 It is explicitly designed to be:
 - automation-friendly (exit codes, deterministic scanning order),
-- recruiter-friendly (clear messages, actionable failures),
+- reader-friendly (clear messages, actionable failures),
 - engine-aware (model_based vs monte_carlo vs signal_level vs validation wrappers).
 
 Scope (V1)
@@ -51,7 +51,7 @@ Dependencies
 Notes
 -----
 This module is designed to be used as a "quality gate" in CI and as a
-pre-demo check before generating recruiter-facing HTML reports.
+pre-demo check before generating reader-facing HTML reports.
 """
 
 from __future__ import annotations

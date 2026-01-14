@@ -5,7 +5,7 @@ Standalone HTML case report generator for radar_pipeline runs.
 
 Intent
 ------
-Convert a single run directory (results/cases/<run_id>/) into a portable, recruiter-friendly
+Convert a single run directory (results/cases/<run_id>/) into a portable, reader-friendly
 artifact:
 - report.html (self-contained; plots embedded as base64)
 - plots/*.png (also persisted for convenience)

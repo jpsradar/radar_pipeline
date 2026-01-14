@@ -5,7 +5,7 @@ Self-contained HTML report generator for a single case run.
 
 Purpose
 -------
-Generate a human-readable, recruiter-facing HTML artifact for one run directory:
+Generate a human-readable, reader-facing HTML artifact for one run directory:
 - explains what was simulated (inputs, assumptions, definitions)
 - summarizes key results (range, Pd/Pfa, FAR)
 - highlights engineering drivers and warnings
