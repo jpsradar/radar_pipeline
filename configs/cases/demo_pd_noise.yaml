@@ -1,6 +1,6 @@
 # configs/cases/demo_pd_noise.yaml
 #
-# End-to-end performance demo (noise-limited PD-style abstraction).
+# End-to-end performance demo (noise-limited Pd-style abstraction).
 #
 # Run:
 #   python -m cli.run_case --case configs/cases/demo_pd_noise.yaml --engine model_based --seed 123
@@ -15,6 +15,16 @@ assumptions:
   - "Point target with deterministic RCS (no Swerling fluctuations)."
   - "Thermal noise dominates; interference/jamming not modeled in this case."
   - "Propagation is free-space; additional losses captured via environment.system_losses_db."
+
+# Explicit validity contract (reviewer-facing)
+validity:
+  stat_model: "AWGN thermal noise; deterministic target (nonfluctuating RCS); single-cell detection abstraction"
+  clutter: "none (noise-limited)"
+  limits:
+    - "Assumes IID, stationary noise statistics (no time-varying interference)."
+    - "No clutter, multipath, ducting, or propagation anomalies modeled."
+    - "Detection model is an abstraction; not a signal-processing implementation."
+    - "Results are scenario-dependent; full configuration is recorded in manifests."
 
 radar:
   fc_hz: 10000000000.0
@@ -43,7 +53,26 @@ detection:
   integration: noncoherent
 
 metrics:
-  ranges_m: [10000.0, 15000.0, 20000.0, 30000.0, 40000.0]
+  # Increased point density for reviewer-quality plots (same span, finer grid)
+  ranges_m:
+    [
+      10000.0,
+      12000.0,
+      14000.0,
+      16000.0,
+      18000.0,
+      20000.0,
+      22000.0,
+      24000.0,
+      26000.0,
+      28000.0,
+      30000.0,
+      32000.0,
+      34000.0,
+      36000.0,
+      38000.0,
+      40000.0,
+    ]
 
 geometry:
   n_range_bins: 256
