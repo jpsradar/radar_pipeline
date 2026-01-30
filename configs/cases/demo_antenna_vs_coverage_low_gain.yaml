@@ -11,9 +11,6 @@
 # - fewer beams per scan => shorter scan time (better revisit)
 # - lower gain => lower SNR => lower Pd at the same Pfa
 #
-# Run:
-#   python -m cli.run_case --case configs/cases/demo_antenna_vs_coverage_low_gain.yaml --engine auto --seed 123 --overwrite --strict
-#
 # Expected direction:
 #   - scan_time_s relatively small (coverage/revisit better)
 #   - snr_db and Pd lower than the high-gain companion case
@@ -35,13 +32,12 @@ radar:
 
 antenna:
   # Low-gain mode (coverage-first).
-  # Chosen to be ~10 dB below the baseline 30 dB case per channel:
-  # 25 dB Tx and 25 dB Rx => -10 dB total compared to 30/30.
+  # ~10 dB below baseline per channel.
   gain_tx_db: 25.0
   gain_rx_db: 25.0
 
 receiver:
-  bw_hz: 5000000.0
+  bw_hz: 1000000.0
   nf_db: 5.0
   temperature_k: 290.0
 
@@ -57,8 +53,8 @@ detection:
   integration: noncoherent
 
 metrics:
-  # Keep the same first range point as the other performance demos to make comparisons easy.
-  ranges_m: [50000.0, 75000.0, 100000.0, 125000.0, 150000.0, 175000.0, 200000.0, 225000.0, 250000.0, 275000.0, 300000.0]
+  ranges_m:
+    [2000.0, 5000.0, 10000.0, 15000.0, 20000.0, 30000.0, 40000.0, 50000.0, 60000.0]
 
 geometry:
   # Coverage proxy: fewer beams => shorter scan time => better revisit.
