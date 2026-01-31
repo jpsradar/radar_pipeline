@@ -39,3 +39,6 @@ plots_out/
 *.log
 # Local artifacts (do not commit)
 Bloque_*.zip
+
+# Local notebooks (generated / WIP)
+notebooks/
