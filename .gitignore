@@ -42,3 +42,12 @@ Bloque_*.zip
 
 # Local notebooks (generated / WIP)
 notebooks/
+
+# Jupyter
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+
+# Python
+__pycache__/
+*.pyc
+
