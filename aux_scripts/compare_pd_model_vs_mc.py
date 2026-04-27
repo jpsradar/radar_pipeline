@@ -546,35 +546,50 @@ def main() -> int:
     }
     dump_json(out_dir / "comparison.json", payload)
 
-    # Plot (mandatory)
     x = np.array([p.snr_db for p in points], dtype=float)
     y_mc = np.array([p.pd_mc for p in points], dtype=float)
     y_lo = np.array([p.ci_low for p in points], dtype=float)
     y_hi = np.array([p.ci_high for p in points], dtype=float)
     y_mod = np.array([p.pd_model for p in points], dtype=float)
+    y_err = np.abs(y_mod - y_mc)
 
-    plt.figure()
-    plt.plot(x, y_mod, label="Pd model")
-    plt.plot(x, y_mc, label="Pd Monte Carlo")
-    plt.fill_between(x, y_lo, y_hi, alpha=0.2, label="Wilson 95% CI (MC)")
-    plt.ylim(-0.02, 1.02)
-    plt.xlabel("SNR [dB]")
-    plt.ylabel("Pd")
-    plt.title(f"Pd vs SNR (model vs MC) – {swerling} (seed={args.seed})")
-    plt.grid(True)
-    plt.legend()
-    plt.tight_layout()
+    fig, (ax_pd, ax_err) = plt.subplots(
+        2,
+        1,
+        sharex=True,
+        figsize=(9.5, 7.0),
+        gridspec_kw={"height_ratios": [2.1, 1.0]},
+    )
 
-    png_path = out_dir / "comparison.png"
-    plt.savefig(png_path, dpi=160)
-    plt.close()
+    ax_pd.plot(x, y_mod, marker="o", linewidth=2.0, label="Analytic Pd model")
+    ax_pd.plot(x, y_mc, marker="s", linestyle="--", linewidth=2.0, label="Monte Carlo Pd")
+    ax_pd.fill_between(x, y_lo, y_hi, alpha=0.18, label="Wilson 95% CI (MC)")
+
+    y_max = float(np.nanmax([np.nanmax(y_mod), np.nanmax(y_mc), np.nanmax(y_hi)]))
+    ax_pd.set_ylim(-0.02, min(1.0, max(0.12, 1.25 * y_max)))
+    ax_pd.set_ylabel("Pd")
+    ax_pd.set_title(f"Pd Model Validation — {swerling} (seed={args.seed})")
+    ax_pd.grid(True, linestyle="--", alpha=0.35)
+    ax_pd.legend(loc="best")
+
+    ax_err.plot(x, np.maximum(y_err, 1e-12), marker="o", linewidth=2.0)
+    ax_err.set_yscale("log")
+    ax_err.set_xlabel("SNR [dB]")
+    ax_err.set_ylabel("|ΔPd|")
+    ax_err.set_title("Absolute model-vs-Monte-Carlo residual")
+    ax_err.grid(True, which="both", linestyle="--", alpha=0.35)
+
+    fig.tight_layout()
+
+    png_path = out_dir / f"pd_model_vs_mc_validation_{swerling}.png"
+    fig.savefig(png_path, dpi=200)
+    plt.close(fig)
 
     pretty = Path("${PROJECT_ROOT}") / out_dir
     print("[OK] Wrote artifacts:")
     print(f"  {pretty / 'comparison.csv'}")
     print(f"  {pretty / 'comparison.json'}")
-    print(f"  {pretty / 'comparison.png'}")
-
+    print(f"  {pretty / png_path.name}")
     return 0
 
 

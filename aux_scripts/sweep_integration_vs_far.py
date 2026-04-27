@@ -180,35 +180,53 @@ def _extract_geometry(metrics: Dict[str, Any]) -> Dict[str, Optional[float]]:
 
 def _plot(out_png: Path, n_list: List[int], pd_list: List[Optional[float]], far_list: List[Optional[float]]) -> None:
     """
-    Plot Pd and FAR/s vs N on a log2 x-axis.
+    Plot integration trade-offs without dual-axis ambiguity.
 
-    Conventions
-    ----------
-    - No explicit color styling: matplotlib defaults, per repo conventions.
-    - FAR uses log y-scale because it typically spans orders of magnitude.
+    The first panel shows normalized trends for comparison. The lower panels
+    preserve the physical units for Pd and FAR separately.
     """
     n = np.asarray(n_list, dtype=float)
     pd = np.array([np.nan if v is None else float(v) for v in pd_list], dtype=float)
     far = np.array([np.nan if v is None else float(v) for v in far_list], dtype=float)
 
-    fig, ax1 = plt.subplots()
+    pd_norm = pd / max(float(np.nanmax(pd)), 1e-12)
+    far_norm = far / max(float(np.nanmax(far)), 1e-12)
 
-    ax1.set_title("Trade-off: Integration (N) vs Pd and FAR/s")
-    ax1.set_xlabel("N pulses (noncoherent integration)")
-    ax1.set_xscale("log", base=2)
-    ax1.set_xticks(n_list)
-    ax1.get_xaxis().set_major_formatter(plt.ScalarFormatter())
-    ax1.set_ylabel("Pd at first range point")
-    ax1.plot(n, pd, marker="o")
-    ax1.set_ylim(0.0, 1.0)
+    fig, (ax_norm, ax_pd, ax_far) = plt.subplots(
+        3,
+        1,
+        sharex=True,
+        figsize=(9.5, 8.0),
+        gridspec_kw={"height_ratios": [1.35, 1.0, 1.0]},
+    )
 
-    ax2 = ax1.twinx()
-    ax2.set_ylabel("FAR per second")
-    ax2.plot(n, far, marker="s")
-    ax2.set_yscale("log")
+    ax_norm.plot(n, pd_norm, marker="o", linewidth=2.0, label="Pd normalized")
+    ax_norm.plot(n, far_norm, marker="s", linewidth=2.0, label="FAR/s normalized")
+    ax_norm.set_title("Radar System Trade-off: Detection vs False-Alarm Load")
+    ax_norm.set_ylabel("Normalized metric")
+    ax_norm.set_ylim(-0.03, 1.08)
+    ax_norm.grid(True, which="both", linestyle="--", alpha=0.35)
+    ax_norm.legend(loc="best")
+
+    ax_pd.plot(n, np.maximum(pd, 1e-12), marker="o", linewidth=2.0)
+    ax_pd.set_yscale("log")
+    ax_pd.set_ylabel("Pd")
+    ax_pd.set_title("Detection probability at first range point")
+    ax_pd.grid(True, which="both", linestyle="--", alpha=0.35)
+
+    ax_far.plot(n, np.maximum(far, 1e-12), marker="s", linewidth=2.0)
+    ax_far.set_yscale("log")
+    ax_far.set_ylabel("FAR / second")
+    ax_far.set_xlabel("N pulses (noncoherent integration)")
+    ax_far.set_title("Operational false-alarm load")
+    ax_far.grid(True, which="both", linestyle="--", alpha=0.35)
+
+    ax_far.set_xscale("log", base=2)
+    ax_far.set_xticks(n_list)
+    ax_far.get_xaxis().set_major_formatter(plt.ScalarFormatter())
 
     fig.tight_layout()
-    fig.savefig(out_png, dpi=160)
+    fig.savefig(out_png, dpi=200)
     plt.close(fig)
 
 

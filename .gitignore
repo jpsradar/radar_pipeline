@@ -51,3 +51,18 @@ notebooks/
 __pycache__/
 *.pyc
 
+
+# outputs
+results/
+*.png
+*.csv
+*.json
+
+# notebooks ejecutados
+*.executed.ipynb
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
