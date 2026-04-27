@@ -44,6 +44,10 @@ exclude = [
   "radar-antennas-propagation*",
   "radar-dsp-pipeline*",
 ]
-
 [tool.ruff]
 line-length = 100
+exclude = [
+  "notebook",
+  "results",
+  "radar_pipeline.egg-info",
+]
