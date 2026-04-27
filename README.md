@@ -1,3 +1,15 @@
+## What this is (quickly)
+
+A radar detection analysis pipeline that:
+
+- Models probability of detection (Pd) analytically  
+- Validates results against Monte Carlo simulations (Swerling targets)  
+- Maps detection performance into real system constraints via false-alarm rate (FAR)  
+- Exposes where common radar assumptions break  
+
+This is not a simulator demo — it is a tool for **engineering trade-off decisions**.
+
+
 # Radar Performance Pipeline
 
 A reproducible radar performance analysis pipeline for **system-level trade-off studies** under explicit statistical assumptions and operational constraints.
