@@ -318,13 +318,15 @@ def run_model_based_case(cfg: Dict[str, Any], seed: Optional[int] = None) -> Dic
             "snr_definition": "SINR_per_pulse if interference present else SNR_per_pulse",
             "statistic": {
                 "name": "energy_sum",
-                "definition": "T = sum_{i=1..N} |z_i|^2 (power/energy domain)",
-                "normalization": "unit-variance convention for chi-square family (SciPy chi2/ncx2)",
+                "definition": "E = sum_{i=1..N} |z_i|^2",
+                "domain": "normalized_energy",
+                "normalization": "noise-only per-pulse energy has mean 1",
+                "equivalence": "2E follows chi-square distribution with 2N degrees of freedom",
             },
             "h0": {},
             "h1": {},
         }
-
+        
         if integration == "noncoherent":
             threshold = _threshold_noncoherent(pfa=pfa_f, n_pulses=n_pulses)
             pd = _pd_noncoherent(threshold=threshold, snr_lin=eff_snr_lin, n_pulses=n_pulses)
@@ -511,15 +513,28 @@ def _received_power_w(
 def _threshold_noncoherent(*, pfa: float, n_pulses: int) -> float:
     """Threshold for noncoherent integration of N pulses under H0 (chi-square with 2N DOF)."""
     df = 2 * n_pulses
-    return float(chi2.isf(pfa, df=df))
+    return 0.5 * float(chi2.isf(pfa, df=df))
 
 
 def _pd_noncoherent(*, threshold: float, snr_lin: np.ndarray, n_pulses: int) -> np.ndarray:
-    """Pd for noncoherent integration under deterministic target model (ncx2 with nc=2*N*SNR)."""
+    """Pd for noncoherent integration under deterministic target model.
+
+    The public detector statistic is normalized energy:
+
+        E = sum |z_i|^2, with noise-only per-pulse energy mean = 1
+
+    The equivalent chi-square statistic is:
+
+        X = 2E
+
+    SciPy ncx2 operates in chi-square space, so the energy threshold is converted
+    before evaluating the survival function.
+    """
     df = 2 * n_pulses
     nc = 2.0 * n_pulses * np.asarray(snr_lin, dtype=float)
-    return ncx2.sf(threshold, df=df, nc=nc)
-
+    threshold_chi2 = 2.0 * float(threshold)
+    return ncx2.sf(threshold_chi2, df=df, nc=nc)
+    
 
 def _threshold_coherent(*, pfa: float) -> float:
     """Threshold for 2-DOF energy detector under H0 (baseline for coherent-like model)."""

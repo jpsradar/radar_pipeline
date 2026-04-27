@@ -289,6 +289,9 @@ def run_model_vs_mc_from_case(
 
     df = int(contract["df"])
     thr = float(contract["threshold"])
+    statistic = contract["raw"].get("statistic", {})
+    threshold_for_ncx2 = 2.0 * thr if statistic.get("domain") == "normalized_energy" else thr
+
     integration = str(contract["integration"])
     n_pulses = int(contract["n_pulses"])
     pfa_target = float(contract["pfa_target"])
@@ -296,7 +299,7 @@ def run_model_vs_mc_from_case(
     # Optional: empirical Pfa under H0 using the exact df and threshold.
     # Under H0, nc=0.
     t0 = rng.noncentral_chisquare(df=df, nonc=0.0, size=int(n_trials))
-    k0 = int(np.sum(t0 > thr))
+    k0 = int(np.sum(t0 > threshold_for_ncx2))
     pfa_emp = float(k0 / n_trials)
 
     # Pd under H1 per range point: nc depends on integration mode.
@@ -316,7 +319,7 @@ def run_model_vs_mc_from_case(
             nonc = 2.0 * float(n_pulses) * snr_f
 
         t1 = rng.noncentral_chisquare(df=df, nonc=nonc, size=int(n_trials))
-        k1 = int(np.sum(t1 > thr))
+        k1 = int(np.sum(t1 > threshold_for_ncx2))
         pd_emp = float(k1 / n_trials)
         pd_emp_list.append(pd_emp)
 
